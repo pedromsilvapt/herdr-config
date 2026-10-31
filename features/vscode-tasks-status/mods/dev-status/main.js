@@ -152,7 +152,10 @@ export default class WorkspaceStatus extends View {
     this.cache = {}; // "machine|folder" -> buttons
     this.key = null;
     this.size = null;
-    this.states = {}; // label -> running (true), finished (false) or unknown (null)
+    this.spaceId = null;
+    // space id -> label -> running (true), finished (false) or unknown (null).
+    // Kept per space, so switching back shows the last known states at once.
+    this.states = {};
     cx.timer.every(15000, (cx) => this.reload(cx));
     cx.timer.every(3000, (cx) => this.poll(cx));
   }
@@ -161,17 +164,18 @@ export default class WorkspaceStatus extends View {
   poll(cx) {
     const space = spaces().find((s) => s.active);
     const buttons = (this.key && this.cache[this.key]) || [];
+    if (!space) return;
     if (!buttons.some((b) => tabOf(space, b))) {
-      if (Object.keys(this.states).length) {
-        this.states = {};
+      if (this.states[space.id]) {
+        delete this.states[space.id];
         cx.notify();
       }
       return;
     }
     cx.spawn(async (cx) => {
       const next = await states(space, buttons);
-      if (JSON.stringify(next) === JSON.stringify(this.states)) return;
-      this.states = next;
+      if (JSON.stringify(next) === JSON.stringify(this.states[space.id])) return;
+      this.states[space.id] = next;
       cx.notify();
     });
   }
@@ -194,6 +198,7 @@ export default class WorkspaceStatus extends View {
       } catch {
         // Unreachable machine or a broken file: keep what was there.
       }
+      this.poll(cx);
       cx.notify();
     });
   }
@@ -219,7 +224,7 @@ export default class WorkspaceStatus extends View {
       .when(!ok, (el) => el.opacity(0.5))
       .when(ok, (el) => el.cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground)).on_click((_e, cx) => this.click(space.id, b, cx)))
       .tooltip(b.problem ?? b.tooltip ?? b.label)
-      .child(this.dot(t, space, b, this.states[b.label]))
+      .child(this.dot(t, space, b, this.states[space.id]?.[b.label]))
       .child(b.label);
   }
 
@@ -266,6 +271,10 @@ export default class WorkspaceStatus extends View {
     const space = spaces().find(s => s.active);
     const key = keyOf(space);
     if (key !== this.key) this.reload(cx);
+    if (space?.id !== this.spaceId) {
+      this.spaceId = space?.id ?? null;
+      this.poll(cx);
+    }
     const list = agents();
     const needs = list.filter(a => a.status === "blocked").length;
     const label = (icon, text) => h_flex().gap(6).items_center().flex_none().child(svg(`mods/workspace-chrome/${icon}.svg`).size(13)).child(text);
@@ -302,7 +311,7 @@ export default class WorkspaceStatus extends View {
         div().id("task-more").h(20).px(7).flex().flex_none().items_center().rounded(5).cursor_pointer()
           .hover((s) => s.bg(t.hover).text_color(t.foreground))
           .tooltip(hidden.map((b) => b.label).join(", "))
-          .on_click(() => openOverlay({ mod: "dev-status", kind: "popup", width: 240, height: Math.min(hidden.length * 29 + 10, 400), props: { part: "more", space: space.id, buttons: hidden, states: this.states } }))
+          .on_click(() => openOverlay({ mod: "dev-status", kind: "popup", width: 240, height: Math.min(hidden.length * 29 + 10, 400), props: { part: "more", space: space.id, buttons: hidden, states: this.states[space.id] ?? {} } }))
           .child(`+${hidden.length}`)))
       .when(!buttons.length, el => el.child(div().id("palette").text_color(t.dim).on_click(() => run("app.palette")).child(`${window()?.platform === "macos" ? "⌘" : "Ctrl"} Shift P  commands`)));
   }
