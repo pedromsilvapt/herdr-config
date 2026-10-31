@@ -1,0 +1,15 @@
+#!/bin/sh
+# herdr-core's bridge into a devcontainer: hc machine add --via "herdr-dc-via <id> <user> <workdir>".
+# hc appends the shell line to run there. Never starts the container: a stopped
+# one reads as an unavailable machine until something starts it on purpose.
+id=$1 user=$2 workdir=$3
+shift 3
+if [ "$(docker inspect -f '{{.State.Running}}' "$id" 2>/dev/null)" != "true" ]; then
+  echo "devcontainer $id is not running" >&2
+  exit 255
+fi
+# docker exec skips the user's shell profile, so take PATH from their login shell
+# (the one agents start in), falling back to adding ~/.local/bin. Its stdin is
+# closed so it can't eat what hc pipes in.
+exec docker exec -i -u "$user" -w "$workdir" "$id" sh -c \
+  'p=$("${SHELL:-sh}" -lc env 2>/dev/null </dev/null | sed -n "s/^PATH=//p"); PATH="${p:-$HOME/.local/bin:$PATH}"; '"$*"

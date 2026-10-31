@@ -1,0 +1,154 @@
+# Herdr customizations
+
+```
+herdr/
+├── README.md        what each feature does, where its files go, what it needs
+├── install.sh       ./install.sh            installs everything
+│                    ./install.sh zed-button  installs only the features you name
+├── layout/dev.json  the shared `dev` layout (a copy of `main` that uses the three mods)
+└── features/
+    ├── devcontainers/
+    │   ├── mods/devcontainers/   the panel and the background sync
+    │   ├── mods/dc-ports/        the Ports panel (port forwarding)
+    │   ├── ports/                herdr-dc-ports, a static Go helper → ~/.local/lib/herdr + ~/.local/bin
+    │   ├── bin/herdr-dc-via      docker exec bridge → ~/.local/bin
+    │   └── keys.json             ctrl-alt-shift-d, added to your keys.json
+    ├── vscode-tasks-status/
+    │   ├── mods/dev-status/      status bar with the VS Code task buttons
+    │   └── upstream.diff         changes compared to the shipped workspace-status
+    └── zed-button/
+        ├── mods/dev-tabs/        tab bar with the Zed button (and zed.svg)
+        ├── bin/herdr-zed-open    focus-or-open Zed helper → ~/.local/bin
+        └── upstream.diff         changes compared to the shipped tabs
+```
+
+Three additions to the Herdr app, all shown in a custom `dev` layout. Copies of
+the files that live in `~/.config/herdr-app/` (plus scripts in `~/.local/bin/`
+and the `herdr-dc-ports` builds in `~/.local/lib/herdr/`), so they can be put
+back after a reinstall or a reset.
+
+```sh
+./install.sh                     # everything
+./install.sh devcontainers zed-button   # only some features
+```
+
+Then pick the layout: `ctrl-shift-l` → **dev**. `install.sh` runs
+`herdr-app check` on each mod it installs. Herdr regenerates `gpui-kit.d.ts`
+and `jsconfig.json` in each mod folder on its own, so those aren't kept here.
+
+## Layout — `layout/dev.json` → `layouts/dev.json`
+
+Cloned from the shipped `main` layout (v0.1.9). Changes:
+- tab bar uses `dev-tabs` instead of `tabs`
+- status bar uses `dev-status` instead of `workspace-status`
+- right panel adds **Devcontainers** and **Ports** sections next to Files and Changes
+- a headless floating `devcontainers` block (`id: devcontainers-sync`,
+  `props.headless`) so the sync runs even while the panel is closed
+
+## Features
+
+### 1. Devcontainers panel — `features/devcontainers/`
+
+| File | Installed to |
+|---|---|
+| `mods/devcontainers/` | `mods/devcontainers/` |
+| `mods/dc-ports/` | `mods/dc-ports/` |
+| `ports/` (Go) | built to `~/.local/lib/herdr/herdr-dc-ports-linux-{amd64,arm64}`, host's linked as `~/.local/bin/herdr-dc-ports` |
+| `bin/herdr-dc-via` | `~/.local/bin/herdr-dc-via` |
+| `keys.json` | merged into `keys.json` (`ctrl-alt-shift-d` → `devcontainers.refresh`) |
+
+Turns each devcontainer into a herdr-core machine, reached with
+`herdr-dc-via` (docker exec) instead of ssh. docker exec skips shell
+profiles, so the bridge takes `PATH` from the container user's login shell
+(`$SHELL -lc env`, falling back to adding `~/.local/bin`). That way agents
+installed in their own folders, like `claude` and `opencode`, show as
+installed in the new-tab menu.
+
+Lists host folders with a devcontainer config, and lets you create (`devcontainer up`), start and open
+them. Syncs at start, every 10 s, on Refresh and on the key.
+
+Needs: `docker`, and `@devcontainers/cli`
+(`npm i -g --prefix ~/.local @devcontainers/cli`).
+
+#### Ports panel — `mods/dc-ports/`, `ports/`
+
+Lists the listening TCP ports of every running devcontainer (process name, and
+the bind address when it's loopback only), and forwards one to this computer
+when you click **Forward**. Nothing is forwarded on its own, and ports are only
+scanned when the panel opens or on Refresh (a 500 ms timer reads the layout to
+notice the panel reopening; it never runs docker). A forward takes the same
+port on `127.0.0.1` when it's free, a random one otherwise; click
+`localhost:N` to open it in the browser, `×` to stop it.
+
+Like VS Code shipping its server, `herdr-dc-ports` copies itself into the
+container (`/tmp/.herdr-dc/`, piped through `docker exec`, again whenever its
+version changes), since containers rarely have socat or nc:
+- `scan <id>` lists ports from `/proc/net/tcp{,6}` (skips Docker's DNS on
+  `127.0.0.11` and herdr-core's own sockets).
+- `forward <id> <port>` serves localhost and connects to the container's IP.
+  A server on loopback only can't be reached that way, so it starts
+  `relay` inside the container (`docker exec -i`), listening on the
+  container's IP; the relay ends when the forward does (stdin closes).
+
+Each forward is an hc background terminal named `pf-<container id>-<port>`
+that labels itself `dc.host_port=<port>`, so forwards outlive the app and the
+panel rebuilds its list from `hc ls`. A scan stops forwards whose container is
+no longer running.
+
+Needs: `go` to build (`install.sh` skips it with a warning otherwise; it
+rebuilds only when the source changes).
+
+### 2. VS Code tasks in the status bar — `features/vscode-tasks-status/`
+
+| File | Installed to |
+|---|---|
+| `mods/dev-status/` | `mods/dev-status/` |
+| `upstream.diff` | — (changes compared to shipped `workspace-status`) |
+
+The status bar plus a button for each entry in `VsCodeTaskButtons.tasks`
+(from the Task Buttons extension) in the project's `.vscode/settings.json`.
+Each button runs its task from `.vscode/tasks.json` in a tab named after the
+button, on the space's machine (inside the devcontainer when it's one).
+Clicking again selects the tab while the task runs, and runs it again once it
+has finished. Buttons that don't fit go behind "+N".
+
+### 3. Open in Zed button — `features/zed-button/`
+
+| File | Installed to |
+|---|---|
+| `mods/dev-tabs/` (incl. `zed.svg`) | `mods/dev-tabs/` |
+| `bin/herdr-zed-open` | `~/.local/bin/herdr-zed-open` |
+| `upstream.diff` | — (changes compared to shipped `tabs`) |
+
+A "Zed" button in the tab bar that opens the space's folder in Zed on the host.
+If a Zed window already has that folder open, it is focused; otherwise a new
+window opens (`zed -n`). For a devcontainer space it maps the container's
+workspace folder back to the host folder it mounts.
+
+`herdr-zed-open` finds open folders from Zed's window titles (X11, `xprop`),
+matching by folder name. Plain `zed <folder>` can't do this alone because
+`cli_default_open_behavior: existing_window` would add an unopened folder to
+the active window. Without X11/`xprop` it always opens a new window.
+
+Needs: `zed` on `PATH`, `xprop` for the focus part.
+
+## When Herdr updates its shipped mods
+
+`dev-tabs` and `dev-status` are clones of `tabs` and `workspace-status`
+(v0.1.9) and won't pick up upstream changes. To rebase them, clone the new
+shipped mod again and re-apply the `upstream.diff` of the matching feature.
+
+## Dependencies between features
+
+- `dev-tabs` (zed-button) also holds the tab bar's **Devcontainers** and
+  **Ports** panel toggles, next to Files and Changes. Without it, those panels
+  can only be reached through the layout.
+- The Ports panel names containers after the machines in the
+  `devcontainers.machines` shared state (else their folder).
+- The Zed button reads the `devcontainers.machines` shared state the
+  devcontainers mod writes, to map a devcontainer space back to its host
+  folder. It shows only for local spaces and devcontainer spaces.
+- The status bar's tasks look up `.vscode/` on the space's machine through
+  `hc`, so they work in any space, devcontainer or not.
+- `layout/dev.json` references all three mods. Installing only some features
+  leaves an empty block where a missing mod would be.

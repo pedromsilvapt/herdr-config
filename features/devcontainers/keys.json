@@ -1,0 +1,5 @@
+{
+  "global": {
+    "ctrl-alt-shift-d": "devcontainers.refresh"
+  }
+}

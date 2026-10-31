@@ -1,0 +1,84 @@
+--- tabs/main.js
++++ dev-tabs/main.js
+@@ -1,6 +1,6 @@
+ import { View, div, svg, image } from "gpui-kit";
+ import { h_flex } from "gpui-base";
+-import { spaces, panes, run, openOverlay, theme, window, shared, layout, settings } from "herdr";
++import { spaces, panes, run, openOverlay, theme, window, shared, layout, settings, exec, hc, home, notify } from "herdr";
+ 
+ function find(node, id) {
+   if (node?.id === id) return node;
+@@ -11,6 +11,34 @@
+   return null;
+ }
+ 
++// The space's folder as this computer sees it: a local space's as is, a
++// devcontainer's (a machine the devcontainers mod added) mapped from its
++// workspace folder back to the host folder it mounts. Null for other machines.
++async function hostFolder(space) {
++  const tab = space.tabs.find(c => c.active);
++  const folder = panes().find(p => p.tab === tab?.id && p.focused)?.cwd || space.folder;
++  if (space.machine === null) return folder || home();
++  const owned = shared("devcontainers.machines")?.[space.machine];
++  if (!owned) return null;
++  const r = await hc(["machine", "ls", "--json"]).catch(() => null);
++  let workdir = null;
++  try {
++    const target = JSON.parse(r.stdout).machines.find(m => m.name === space.machine)?.target ?? "";
++    workdir = target.split(" ")[3] ?? null;
++  } catch {}
++  if (workdir && folder && (folder === workdir || folder.startsWith(workdir + "/"))) return owned.folder + folder.slice(workdir.length);
++  return owned.folder;
++}
++
++// Zed always runs here, on the host, even for a devcontainer space. herdr-zed-open
++// focuses the window that already has the folder, or opens a new one.
++async function openInZed(space) {
++  const folder = await hostFolder(space);
++  if (!folder) return;
++  const r = await exec("herdr-zed-open", [folder]).catch(e => ({ code: 1, stderr: String(e?.message ?? e) }));
++  if (r.code !== 0) notify({ title: "Couldn't open Zed", body: (r.stderr || r.stdout || "").trim() || `zed ${folder} failed`, level: "error", timeout: 5000 });
++}
++
+ export default class Tabs extends View {
+   init() {
+     this.pressed = null;
+@@ -64,7 +92,7 @@
+           if (from !== null && from !== i) run("tab.move", { id: shown[from].id, index: space.tabs.findIndex(x => x.id === c.id) + 1 });
+           else run("tab.select", { id: c.id });
+         })
+-        .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); openOverlay({ mod: "menu", kind: "popup", width: 200, props: { tab: "tab", target: { id: c.id, space: space.id } } }); })
++        .on_mouse_down("right", () => openOverlay({ mod: "menu", kind: "popup", width: 200, props: { tab: "tab", target: { id: c.id, space: space.id } } }))
+         .when(Boolean(program?.icon), el => el.child(program.tint ? svg(program.icon).size(14).text_color(t.muted) : image(program.icon).size(14)))
+         .child(div().max_w(170).truncate().child(c.zoomed ? `${name} Z` : name))
+         .when(c.status === "working", el => el.child(svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.working).spin(900)))
+@@ -77,7 +105,8 @@
+       ? Math.max(10, (root.traffic_lights[0] + 64) / settings().zoom - (sidebar?.hidden ? 0 : sidebar?.size?.px ?? 0))
+       : 10;
+     const panel = find(root, "panel"), body = find(root, "panel-body");
+-    const enabled = shared("workspace.panels") ?? ["files", "changes"];
++    // The dev layout's panel stack also holds Devcontainers and Ports, always offered.
++    const enabled = [...(shared("workspace.panels") ?? ["files", "changes"]), "devcontainers", "dc-ports"];
+     this.syncPanel(space, panel, body, enabled);
+     const panelButton = (id, label, icon) => {
+       const on = panel && !panel.hidden && body?.active === id;
+@@ -96,8 +125,16 @@
+       .child(button("tab-new", "+", () => openOverlay({ mod: "new-menu", kind: "popup", width: 250, height: 512 })))
+       .when(enabled.includes("files"), el => el.child(panelButton("files", "Files", "mods/files/file.svg")))
+       .when(enabled.includes("changes"), el => el.child(panelButton("changes", "Changes", "mods/changes/changes.svg")))
+-      .when(w?.buttons, el => el.child(button("minimize", w.platform === "windows" ? svg("mods/tabs/win-min.svg").size(16) : "−", () => run("window.minimize")))
+-        .child(button("maximize", w.platform === "windows" ? svg(`mods/tabs/${w.maximized ? "win-restore" : "win-max"}.svg`).size(16) : "□", () => run("window.maximize")))
+-        .child(button("close-window", w.platform === "windows" ? svg("mods/tabs/win-close.svg").size(16) : svg("mods/pane/close.svg").size(13), () => run("window.close"))));
++      .child(panelButton("devcontainers", "Devcontainers", "mods/workspace-chrome/layers.svg"))
++      .child(panelButton("dc-ports", "Ports", "mods/workspace-chrome/server.svg"))
++      .when(Boolean(space) && (space.machine === null || Boolean(shared("devcontainers.machines")?.[space.machine])), el => el.child(
++        h_flex().id("open-zed").h(26).px(8).gap(5).flex_none().items_center().rounded(6)
++          .text_size(12).bg(t.chrome).text_color(t.muted)
++          .hover(s => s.bg(t.hover)).on_mouse_down("left", stop)
++          .on_click((_e, cx) => cx.spawn(async () => openInZed(space)))
++          .child(svg("mods/dev-tabs/zed.svg").size(14)).child("Zed")))
++      .when(window()?.buttons, el => el.child(button("minimize", "−", () => run("window.minimize")))
++        .child(button("maximize", "□", () => run("window.maximize")))
++        .child(button("close-window", svg("mods/pane/close.svg").size(13), () => run("window.close"))));
+   }
+ }

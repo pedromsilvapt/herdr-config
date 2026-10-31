@@ -1,0 +1,6 @@
+# Herdr creates these in each mod folder
+gpui-kit.d.ts
+jsconfig.json
+
+# go build run by hand in ports/
+/features/devcontainers/ports/herdr-dc-ports

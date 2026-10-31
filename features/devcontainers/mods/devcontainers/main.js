@@ -1,0 +1,641 @@
+// Devcontainers as machines. The panel keeps a list of host folders
+// (shared "devcontainers.folders"), each uncreated, stopped or running:
+// folders join it from containers the devcontainer tools made here (label
+// devcontainer.local_folder), from local spaces whose folder has a
+// devcontainer config, and from Add folder. A container becomes a herdr-core
+// machine reached with `herdr-dc-via` (docker exec) instead of ssh. Synced at
+// start, every 10 s, on Refresh and on the `devcontainers.refresh` key.
+//
+// hc only saves a machine it can reach, and the bridge never starts a
+// container, so a stopped one is added the first time it runs. Selecting a
+// space on a stopped container, or opening or starting one, starts it;
+// herdr-core reconnects by itself a few seconds later. Create builds one with
+// `devcontainer up` (@devcontainers/cli) in a terminal window.
+//
+// Clicking a row opens its container (or creates it); right-clicking opens
+// a menu of the rest, a popup copy of this mod (props.menu) that hands its
+// choice to the panel through shared "devcontainers.request".
+//
+// Only machines this mod added (shared "devcontainers.machines") are ever
+// changed or removed. A folder can leave the list only while it has no
+// container; otherwise the next sync would bring it back.
+//
+// Two copies in the `dev` layout: the panel, and a headless floating one
+// (props.headless) that draws nothing but is always shown, so the sync runs
+// from launch even while the panel is closed. A shared lock keeps them from
+// writing at once. The build window's title bar is this mod too (props.part
+// "bar").
+
+import { View, div, svg } from "gpui-kit";
+import { v_flex, h_flex } from "gpui-base";
+import { exec, hc, home, theme, run, notify, props, shared, setShared, spaces, focused, machines, nextCommand, pickFolder, openOverlay, closeOverlay } from "herdr";
+
+const I = (name) => `mods/workspace-chrome/${name}.svg`;
+const OWNED = "devcontainers.machines";
+const FOLDERS = "devcontainers.folders";
+const LOCK = "devcontainers.lock";
+const REQUEST = "devcontainers.request";
+const BRIDGE = "herdr-dc-via";
+const CLI_HINT = "Install @devcontainers/cli: npm i -g --prefix ~/.local @devcontainers/cli";
+
+const basename = (p) => p.replace(/\/+$/, "").split("/").pop() ?? p;
+const slug = (s) => s.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "") || "devcontainer";
+const tilde = (p) => (p.startsWith(home()) ? "~" + p.slice(home().length) : p);
+const ORDER = { running: 0, stopped: 1, uncreated: 2 };
+
+// ok | missing | noconfig for each folder, in one call.
+const HEALTH = 'for f; do if [ ! -d "$f" ]; then echo missing; elif [ -f "$f/.devcontainer/devcontainer.json" ] || [ -f "$f/.devcontainer.json" ]; then echo ok; else echo noconfig; fi; done';
+
+async function health(folders) {
+  if (!folders.length) return {};
+  const r = await exec("sh", ["-c", HEALTH, "_", ...folders]).catch(() => null);
+  const out = (r?.stdout ?? "").split("\n");
+  return Object.fromEntries(folders.map((f, i) => [f, out[i] || "ok"]));
+}
+
+// The user VS Code / the devcontainer CLI open terminals as.
+function remoteUser(c) {
+  let meta = [];
+  try {
+    meta = JSON.parse(c.Config?.Labels?.["devcontainer.metadata"] ?? "[]");
+  } catch {}
+  const pick = (k) => [...(Array.isArray(meta) ? meta : [meta])].reverse().find((m) => m?.[k])?.[k];
+  return pick("remoteUser") ?? pick("containerUser") ?? (c.Config?.User || "root");
+}
+
+function describe(c) {
+  const folder = c.Config.Labels["devcontainer.local_folder"];
+  const mount = (c.Mounts ?? []).find((m) => m.Source === folder);
+  return {
+    id: c.Id.slice(0, 12),
+    folder,
+    workdir: mount?.Destination ?? `/workspaces/${basename(folder)}`,
+    user: remoteUser(c),
+    running: Boolean(c.State?.Running),
+  };
+}
+
+const targetOf = (d) => `${BRIDGE} ${d.id} ${d.user} ${d.workdir}`;
+
+async function sleep(s) {
+  await exec("sleep", [String(s)]).catch(() => null);
+}
+
+function hcError(r) {
+  try {
+    return JSON.parse(r.stdout || r.stderr).error?.message ?? (r.stderr || r.stdout).trim();
+  } catch {
+    return (r.stderr || r.stdout || "it didn't answer").trim();
+  }
+}
+
+export default class Devcontainers extends View {
+  init(_props, cx) {
+    if (props()?.part === "bar" || props()?.menu) return;
+    this.items = null; // [{ folder, name, health, state, c: describe() | null, added, error }]
+    this.problem = null; // docker missing and the like
+    this.busy = {}; // folder -> "creating" | "starting" | "stopping" | "deleting" | "opening"
+    this.errors = {}; // folder -> what the last action said
+    this.building = {}; // folder -> address of its `devcontainer up` terminal
+    this.openAfter = new Set(); // folders to open a space on once their machine is ready
+    this.checked = new Set(); // local space folders already looked at
+    this.syncing = false;
+    this.lastSync = null;
+    this.sync(cx);
+    cx.timer.every(10000, (cx) => this.sync(cx));
+    cx.spawn(async (cx) => {
+      for (;;) {
+        const c = await nextCommand();
+        if (c === "refresh") this.sync(cx, true);
+      }
+    });
+  }
+
+  // A lock older than a minute is from a copy that went away mid-sync.
+  lock() {
+    const held = shared(LOCK);
+    if (held && Date.now() - held < 60000) return false;
+    setShared(LOCK, Date.now());
+    return true;
+  }
+
+  async locked(fn) {
+    for (let i = 0; !this.lock(); i++) {
+      if (i >= 20) throw new Error("Another sync is stuck; try again in a minute.");
+      await sleep(1);
+    }
+    try {
+      return await fn();
+    } finally {
+      setShared(LOCK, null);
+    }
+  }
+
+  sync(cx, loud = false) {
+    if (this.syncing) return;
+    if (!this.lock()) {
+      // Another copy is writing: just show what's there.
+      cx.spawn(async (cx) => {
+        await this.reconcile(false).catch(() => null);
+        cx.notify();
+      });
+      return;
+    }
+    this.syncing = true;
+    cx.notify();
+    cx.spawn(async (cx) => {
+      try {
+        await this.reconcile().finally(() => setShared(LOCK, null));
+        this.problem = null;
+        if (loud) notify({ title: "Devcontainers refreshed", body: this.counts(), level: "success", timeout: 3000 });
+      } catch (e) {
+        this.problem = String(e?.message ?? e);
+      }
+      this.syncing = false;
+      this.lastSync = new Date();
+      cx.notify();
+    });
+  }
+
+  async discover() {
+    const ps = await exec("docker", ["ps", "-a", "-q", "--no-trunc", "--filter", "label=devcontainer.local_folder"]);
+    if (ps.code !== 0) throw new Error(ps.stderr.trim() || "docker ps failed");
+    const ids = ps.stdout.split("\n").map((s) => s.trim()).filter(Boolean);
+    if (!ids.length) return [];
+    const ins = await exec("docker", ["inspect", ...ids]);
+    if (ins.code !== 0) throw new Error(ins.stderr.trim() || "docker inspect failed");
+    return JSON.parse(ins.stdout).map(describe);
+  }
+
+  async machineList() {
+    const r = await hc(["machine", "ls", "--json"]);
+    return r.code === 0 ? JSON.parse(r.stdout).machines ?? [] : [];
+  }
+
+  // A machine name for a folder joining the list: its folder's, made unique
+  // against machines this mod didn't add and the list's other names.
+  nameFor(folder, folders, known, owned) {
+    const used = new Set([...known.map((m) => m.name).filter((n) => !owned[n]), ...Object.values(folders).map((f) => f.name)]);
+    const base = slug(basename(folder));
+    let name = base;
+    for (let i = 1; used.has(name); i++) name = i === 1 ? `${base}-dc` : `${base}-dc-${i}`;
+    return name;
+  }
+
+  // write: false only reads (the list, machines and containers as they are now).
+  async reconcile(write = true) {
+    const found = await this.discover();
+    const known = await this.machineList();
+    const owned = { ...(shared(OWNED) ?? {}) };
+    const folders = { ...(shared(FOLDERS) ?? {}) };
+    const before = JSON.stringify([owned, folders]);
+    const join = (folder) => {
+      if (folders[folder]) return;
+      const mine = Object.keys(owned).find((n) => owned[n].folder === folder);
+      folders[folder] = { name: mine ?? this.nameFor(folder, folders, known, owned) };
+    };
+
+    if (write) {
+      for (const d of found) join(d.folder);
+      // Local spaces whose folder has a devcontainer config, looked at once each.
+      const fresh = [...new Set(spaces().filter((s) => s.machine === null && s.folder).map((s) => s.folder))].filter((f) => !folders[f] && !this.checked.has(f));
+      fresh.forEach((f) => this.checked.add(f));
+      const h = await health(fresh);
+      for (const f of fresh) if (h[f] === "ok") join(f);
+
+      // Machines whose container is gone: the folder stays, uncreated.
+      for (const [name, o] of Object.entries(owned)) {
+        if (found.some((d) => d.folder === o.folder)) continue;
+        await hc(["machine", "rm", name, "--json"]).catch(() => null);
+        delete owned[name];
+      }
+    }
+
+    const h = await health(Object.keys(folders));
+    const items = [];
+    for (const [folder, { name }] of Object.entries(folders)) {
+      const d = found.find((x) => x.folder === folder) ?? null;
+      const machine = known.find((m) => m.name === name);
+      let error = null;
+      if (d && write) {
+        if (/\s/.test(d.workdir) || /\s/.test(d.user)) {
+          error = "Its workspace folder has a space in it; the bridge can't pass that yet.";
+        } else if (machine && owned[name] && machine.target !== targetOf(d)) {
+          // Rebuilt: same project, new container.
+          await hc(["machine", "rm", name, "--json"]).catch(() => null);
+          delete owned[name];
+          if (d.running) error = await this.add({ ...d, name }, owned);
+        } else if (machine && !owned[name]) {
+          error = `A machine called ${name} already exists.`;
+        } else if (!machine && d.running) {
+          error = await this.add({ ...d, name }, owned);
+        }
+      }
+      if (d?.running && this.busy[folder] === "creating") delete this.busy[folder];
+      items.push({ folder, name, health: h[folder] ?? "ok", c: d, state: d ? (d.running ? "running" : "stopped") : "uncreated", added: Boolean(owned[name]), error });
+    }
+    items.sort((a, b) => ORDER[a.state] - ORDER[b.state] || a.name.localeCompare(b.name));
+    if (write && JSON.stringify([owned, folders]) !== before) {
+      setShared(OWNED, owned);
+      setShared(FOLDERS, folders);
+    }
+    this.items = items;
+    await this.watchBuilds();
+    this.openReady();
+  }
+
+  // Adds a running container; returns why it failed, or null.
+  async add(item, owned) {
+    const r = await hc(["machine", "add", "--name", item.name, "--via", targetOf(item), "--install", "--json"]).catch((e) => ({ code: 1, stdout: "", stderr: String(e) }));
+    if (r.code !== 0) return hcError(r);
+    owned[item.name] = { folder: item.folder, id: item.id };
+    return null;
+  }
+
+  // A build whose terminal ended without a running container failed.
+  async watchBuilds() {
+    const folders = Object.keys(this.building);
+    if (!folders.length) return;
+    const r = await hc(["ls", "--json"]).catch(() => null);
+    let live = [];
+    try {
+      live = JSON.parse(r.stdout).terminals.filter((t) => t.state === "live").map((t) => t.address);
+    } catch {}
+    for (const f of folders) {
+      if (live.includes(this.building[f])) continue;
+      delete this.building[f];
+      if (this.busy[f] === "creating") {
+        delete this.busy[f];
+        this.openAfter.delete(f);
+        this.errors[f] = "The build ended without a running container.";
+      }
+    }
+  }
+
+  // Spaces asked for with Create open once their machine is ready.
+  openReady() {
+    for (const f of [...this.openAfter]) {
+      const item = this.items.find((i) => i.folder === f);
+      if (!item?.added || machines().find((m) => m.name === item.name)?.layout !== "ready") continue;
+      this.openAfter.delete(f);
+      run("space.new", { machine: item.name, folder: item.c.workdir });
+    }
+  }
+
+  // Starts the container, adds it if it wasn't, and waits for its core.
+  async start(item) {
+    const r = await exec("docker", ["start", item.c.id]);
+    if (r.code !== 0) throw new Error(r.stderr.trim() || "docker start failed");
+    if (!item.added) {
+      let why = null;
+      await this.locked(async () => {
+        const owned = { ...(shared(OWNED) ?? {}) };
+        for (let i = 0; i < 5; i++) {
+          why = await this.add({ ...item.c, name: item.name }, owned);
+          if (!why) break;
+          await sleep(1);
+        }
+        if (!why) setShared(OWNED, owned);
+      });
+      if (why) throw new Error(why);
+    }
+    for (let i = 0; i < 30; i++) {
+      if (machines().find((m) => m.name === item.name)?.layout === "ready") return;
+      await sleep(1);
+    }
+  }
+
+  async create(item) {
+    const v = await exec("devcontainer", ["--version"]).catch(() => null);
+    if (v?.code !== 0) throw new Error(CLI_HINT);
+    // A failed build waits for Enter so its output can be read; a good one closes.
+    const script = 'devcontainer up --workspace-folder "$1"; s=$?; [ $s -eq 0 ] && exit 0; echo; echo "devcontainer up failed ($s). Press Enter to close."; read _; exit $s';
+    const r = await hc(["run", "--bg", "--json", "--no-parent", "--name", `dc-up-${item.name}`.slice(0, 32), "--cwd", item.folder, "--", "sh", "-c", script, "_", item.folder]);
+    let address = null;
+    try {
+      address = r.code === 0 ? JSON.parse(r.stdout).address : null;
+    } catch {}
+    if (!address) throw new Error(`Couldn't open a terminal for the build: ${hcError(r)}`);
+    this.building[item.folder] = address;
+    this.openAfter.add(item.folder);
+    openOverlay({
+      kind: "window",
+      key: `dc-up-${item.name}`,
+      width: 760,
+      height: 420,
+      layout: {
+        type: "column",
+        children: [
+          { type: "block", size: { px: 30 }, content: { mod: "devcontainers", props: { part: "bar", name: item.name } } },
+          { type: "block", content: { terminal: address } },
+        ],
+      },
+    });
+  }
+
+  async remove(item) {
+    await this.locked(async () => {
+      const folders = { ...(shared(FOLDERS) ?? {}) };
+      delete folders[item.folder];
+      setShared(FOLDERS, folders);
+    });
+  }
+
+  async deleteContainer(item) {
+    const r = await exec("docker", ["rm", "-f", item.c.id]);
+    if (r.code !== 0) throw new Error(r.stderr.trim() || "docker rm failed");
+    await this.locked(async () => {
+      const owned = { ...(shared(OWNED) ?? {}) };
+      if (owned[item.name]) {
+        await hc(["machine", "rm", item.name, "--json"]).catch(() => null);
+        delete owned[item.name];
+        setShared(OWNED, owned);
+      }
+    });
+  }
+
+  async addFolder() {
+    const folder = await pickFolder({ prompt: "Add" });
+    if (!folder) return;
+    const h = (await health([folder]))[folder];
+    if (h !== "ok") {
+      notify({ title: "Not a devcontainer folder", body: `${tilde(folder)} has no .devcontainer/devcontainer.json or .devcontainer.json.`, level: "warning", timeout: 5000 });
+      return;
+    }
+    await this.locked(async () => {
+      const folders = { ...(shared(FOLDERS) ?? {}) };
+      if (folders[folder]) return;
+      folders[folder] = { name: this.nameFor(folder, folders, await this.machineList(), shared(OWNED) ?? {}) };
+      setShared(FOLDERS, folders);
+    });
+  }
+
+  act(item, what, cx) {
+    const key = item?.folder ?? "+";
+    if (this.busy[key]) return;
+    this.busy[key] = what;
+    delete this.errors[key];
+    cx.notify();
+    cx.spawn(async (cx) => {
+      try {
+        if (what === "adding") await this.addFolder();
+        else if (what === "stopping") {
+          const r = await exec("docker", ["stop", item.c.id]);
+          if (r.code !== 0) throw new Error(r.stderr.trim() || "docker stop failed");
+        } else if (what === "deleting") await this.deleteContainer(item);
+        else if (what === "removing") await this.remove(item);
+        else if (what === "creating") {
+          await this.create(item);
+          return; // busy until the container runs or the build ends
+        } else {
+          if (!item.c.running || !item.added) {
+            notify({ title: `Starting ${item.name}…`, level: "info", timeout: 3000 });
+            await this.start(item);
+          }
+          if (what === "opening") {
+            const here = spaces().find((s) => s.machine === item.name);
+            run(here ? "space.select" : "space.new", here ? { id: here.id } : { machine: item.name, folder: item.c.workdir });
+          }
+        }
+        delete this.busy[key];
+      } catch (e) {
+        delete this.busy[key];
+        this.errors[key] = String(e?.message ?? e);
+      }
+      if (this.lock()) await this.reconcile().catch(() => null).finally(() => setShared(LOCK, null));
+      else await this.reconcile(false).catch(() => null);
+      cx.notify();
+    });
+  }
+
+  // A choice from the right-click menu. Called from render, like wake().
+  takeRequest(cx) {
+    const req = shared(REQUEST);
+    if (!req || req.at === this.handled) return;
+    this.handled = req.at;
+    cx.timer.after(0, (cx) => {
+      setShared(REQUEST, null);
+      const item = this.items?.find((i) => i.folder === req.folder);
+      if (item) this.act(item, req.what, cx);
+    });
+  }
+
+  // The row's click: open it, or create it.
+  primary(item, cx) {
+    if (this.busy[item.folder] || item.health !== "ok") return;
+    this.act(item, item.state === "uncreated" ? "creating" : "opening", cx);
+  }
+
+  menu(item) {
+    const { folder, name, state, health } = item;
+    openOverlay({ mod: "devcontainers", kind: "popup", width: 200, height: 112, props: { menu: { folder, name, state, health } } });
+  }
+
+  // The popup: its choice goes to the panel copy. Delete asks once more, for 4 s.
+  menuView(t) {
+    const m = props().menu;
+    const ok = m.health === "ok";
+    const send = (what) => {
+      setShared(REQUEST, { folder: m.folder, what, at: Date.now() });
+      closeOverlay(props().overlay);
+    };
+    const confirming = Date.now() - (this.confirmAt ?? 0) < 4000;
+    const entries =
+      m.state === "uncreated"
+        ? [
+            ["create", "plus", "Create", () => send("creating"), ok],
+            ["remove", "x", "Remove from list", () => send("removing"), true],
+          ]
+        : [
+            ["open", "terminal", "Open", () => send("opening"), ok],
+            m.state === "running" ? ["stop", "square", "Stop", () => send("stopping"), true] : ["start", "plus", "Start", () => send("starting"), ok],
+            [
+              "delete",
+              "x",
+              confirming ? "Delete container?" : "Delete container",
+              (cx) => {
+                if (confirming) return send("deleting");
+                this.confirmAt = Date.now();
+                cx.timer.after(4000, (cx) => cx.notify());
+                cx.notify();
+              },
+              true,
+              confirming,
+            ],
+          ];
+    return v_flex()
+      .w_full()
+      .p(5)
+      .bg(t.popover)
+      .text_size(12.8)
+      .children(
+        entries.map(([id, icon, label, onClick, enabled, danger]) =>
+          h_flex()
+            .id(`dc-menu-${id}`)
+            .h(31)
+            .px(8)
+            .gap(9)
+            .rounded(7)
+            .items_center()
+            .text_color(danger ? t.ansi1 : t.foreground)
+            .when(!enabled, (el) => el.opacity(0.4))
+            .when(enabled, (el) => el.cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => onClick(cx)))
+            .child(svg(I(icon)).size(14).flex_none().text_color(danger ? t.ansi1 : t.muted))
+            .child(div().flex_1().child(label)),
+        ),
+      );
+  }
+
+  // Selecting a space on a stopped container starts it. Called from render,
+  // where cx.notify() throws, so act() runs on the next tick.
+  wake(cx) {
+    const sp = spaces().find((s) => s.id === focused()?.space);
+    const item = sp?.machine && this.items?.find((i) => i.name === sp.machine && i.added);
+    if (!item || item.state !== "stopped" || this.busy[item.folder] || this.waking) return;
+    this.waking = true;
+    cx.timer.after(0, (cx) => {
+      this.waking = false;
+      this.act(item, "starting", cx);
+    });
+  }
+
+  counts() {
+    const n = (s) => (this.items ?? []).filter((i) => i.state === s).length;
+    return ["running", "stopped", "uncreated"].map((s) => `${n(s)} ${s}`).join(" · ");
+  }
+
+  row(t, item) {
+    const busy = this.busy[item.folder];
+    // Uncreated: a hollow dot.
+    const color = { running: t.ansi2, stopped: t.dim, uncreated: t.chrome }[item.state];
+    const warning = { missing: "Folder not found on disk", noconfig: "No devcontainer.json in this folder" }[item.health];
+    const error = this.errors[item.folder] ?? item.error;
+    const sub = item.state === "stopped" && !item.added ? `${tilde(item.folder)} · added when it starts` : tilde(item.folder);
+    return v_flex()
+      .id(`dc-${item.name}`)
+      .px(10)
+      .py(8)
+      .gap(6)
+      .rounded(8)
+      .hover((s) => s.bg(t.hover))
+      .when(!busy && item.health === "ok", (el) => el.cursor_pointer())
+      .on_click((_e, cx) => this.primary(item, cx))
+      .on_mouse_down("right", (_e, cx) => {
+        cx.stop_propagation();
+        this.menu(item);
+      })
+      .child(
+        h_flex()
+          .gap(8)
+          .items_center()
+          .child(
+            busy
+              ? svg(I("spinner")).size(10).text_color(t.working).spin(900)
+              : div().size(8).flex_none().rounded(4).bg(color).when(item.state === "uncreated", (el) => el.border_1().border_color(t.dim)),
+          )
+          .child(div().flex_1().min_w(0).truncate().text_size(13).text_color(item.health === "missing" ? t.muted : t.foreground).child(item.name))
+          .child(div().flex_none().text_size(11).text_color(t.dim).child(busy ?? item.state)),
+      )
+      .child(div().pl(16).truncate().text_size(11.5).text_color(t.dim).child(sub))
+      .when(Boolean(warning), (el) => el.child(div().pl(16).text_size(11.5).text_color(t.blocked).child(`⚠ ${warning}`)))
+      .when(Boolean(error), (el) => el.child(div().pl(16).text_size(11.5).line_height("16px").text_color(t.ansi1).child(error)));
+  }
+
+  // The build window's title bar.
+  bar(t) {
+    return h_flex()
+      .size_full()
+      .px(12)
+      .gap(8)
+      .items_center()
+      .bg(t.chrome)
+      .border_b(1)
+      .border_color(t.border)
+      .text_size(12.5)
+      .text_color(t.muted)
+      .child(svg(I("layers")).size(14))
+      .child(div().flex_1().child(`Building ${props().name}: devcontainer up`))
+      .child(
+        div()
+          .id("dc-bar-close")
+          .w(22)
+          .h(22)
+          .rounded(6)
+          .flex()
+          .items_center()
+          .justify_center()
+          .cursor_pointer()
+          .hover((s) => s.bg(t.hover))
+          .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+          .on_click(() => closeOverlay(props().overlay))
+          .child(svg(I("x")).size(12)),
+      );
+  }
+
+  headerButton(t, id, onClick, icon) {
+    return div()
+      .id(id)
+      .size(24)
+      .flex()
+      .items_center()
+      .justify_center()
+      .rounded(6)
+      .cursor_pointer()
+      .hover((s) => s.bg(t.hover))
+      .on_click((_e, cx) => onClick(cx))
+      .child(icon);
+  }
+
+  render(cx) {
+    const t = theme();
+    if (props()?.part === "bar") return this.bar(t);
+    if (props()?.menu) return this.menuView(t);
+    this.wake(cx);
+    if (props()?.headless) return div();
+    this.takeRequest(cx);
+    const items = this.items ?? [];
+    const when = this.lastSync ? this.lastSync.toTimeString().slice(0, 5) : "";
+    return v_flex()
+      .id("devcontainers")
+      .size_full()
+      .bg(t.chrome)
+      .text_color(t.foreground)
+      .child(
+        h_flex()
+          .h(48)
+          .px(12)
+          .gap(6)
+          .items_center()
+          .border_b(1)
+          .border_color(t.border)
+          .child(
+            v_flex()
+              .flex_1()
+              .min_w(0)
+              .child(div().text_size(13).font_semibold().child("Devcontainers"))
+              .child(div().truncate().text_size(11).text_color(t.dim).child(this.items ? `${this.counts()} · ${when}` : "")),
+          )
+          .child(
+            this.headerButton(t, "dc-add", (cx) => this.act(null, "adding", cx), this.busy["+"] ? svg(I("spinner")).size(13).text_color(t.working).spin(900) : svg(I("plus")).size(14).text_color(t.muted)),
+          )
+          .child(
+            this.headerButton(t, "dc-refresh", (cx) => this.sync(cx, true), this.syncing ? svg(I("spinner")).size(13).text_color(t.working).spin(900) : div().text_size(14).text_color(t.muted).child("⟳")),
+          ),
+      )
+      .child(
+        v_flex()
+          .id("dc-list")
+          .flex_1()
+          .p(6)
+          .gap(2)
+          .overflow_y_scrollbar()
+          .when(Boolean(this.problem), (el) => el.child(div().p(10).text_size(12).line_height("17px").text_color(t.blocked).child(this.problem)))
+          .when(Boolean(this.errors["+"]), (el) => el.child(div().p(10).text_size(12).text_color(t.ansi1).child(this.errors["+"])))
+          .when(this.items === null && !this.problem, (el) => el.child(div().p(10).text_size(12).text_color(t.dim).child("Looking for devcontainers…")))
+          .when(this.items !== null && !items.length && !this.problem, (el) =>
+            el.child(div().p(10).text_size(12).line_height("17px").text_color(t.dim).child("No devcontainer folders yet. Add one with +, or open a space in a folder that has a .devcontainer.")),
+          )
+          .children(items.map((i) => this.row(t, i))),
+      );
+  }
+}
