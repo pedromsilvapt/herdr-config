@@ -43,7 +43,8 @@ Cloned from the shipped `main` layout (v0.1.9). Changes:
 - status bar uses `dev-status` instead of `workspace-status`
 - right panel adds **Devcontainers** and **Ports** sections next to Files and Changes
 - a headless floating `devcontainers` block (`id: devcontainers-sync`,
-  `props.headless`) so the sync runs even while the panel is closed
+  `props.headless`) so the start sync runs, and a space on a stopped container
+  wakes it, even while the panel is closed
 
 ## Features
 
@@ -65,7 +66,13 @@ installed in their own folders, like `claude` and `opencode`, show as
 installed in the new-tab menu.
 
 Lists host folders with a devcontainer config, and lets you create (`devcontainer up`), start and open
-them. Syncs at start, every 10 s, on Refresh and on the key.
+them. Syncs at start, when the panel opens, on Refresh and on the key; nothing
+watches containers in the background (a 500 ms timer reads the layout to notice
+the panel opening; it never runs docker). After start, stop, delete or create it
+syncs every 2 s until the container gets there, the action fails or a minute
+passes (for create, a minute from the end of the build). Containers changed
+outside Herdr show as they were until the next sync, except that selecting a
+space whose machine went away syncs once.
 
 Needs: `docker`, and `@devcontainers/cli`
 (`npm i -g --prefix ~/.local @devcontainers/cli`).

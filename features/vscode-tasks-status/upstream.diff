@@ -1,6 +1,6 @@
 --- workspace-status/main.js
 +++ dev-status/main.js
-@@ -1,20 +1,318 @@
+@@ -1,20 +1,358 @@
 +// The status bar, plus the selected space's VS Code task buttons: the
 +// `VsCodeTaskButtons.tasks` list from the project's .vscode/settings.json (the
 +// Task Buttons extension), each running its task from .vscode/tasks.json. The
@@ -16,7 +16,7 @@
 -import { h_flex } from "gpui-base";
 -import { spaces, agents, theme, run, window } from "herdr";
 +import { h_flex, v_flex } from "gpui-base";
-+import { spaces, panes, agents, theme, run, window, exec, hc, readTextFile, props, openOverlay, closeOverlay } from "herdr";
++import { spaces, panes, agents, theme, run, window, exec, hc, readTextFile, watchFolder, props, openOverlay, closeOverlay } from "herdr";
 +
 +// The nearest folder up from $1 with a .vscode/settings.json.
 +const FIND = 'd=$1; while [ -n "$d" ]; do [ -f "$d/.vscode/settings.json" ] && { echo "$d"; exit 0; }; [ "$d" = / ] && exit 1; d=$(dirname "$d"); done; exit 1';
@@ -79,17 +79,18 @@
 +  return { ...base, argv, cwd, line, reveal: task.presentation?.reveal ?? "always", tooltip: base.tooltip ?? argv.join(" ") };
 +}
 +
++// The project's root (null: none) and its buttons.
 +async function load(space, folder) {
 +  const on = space.machine;
 +  const r = await exec("sh", ["-c", FIND, "_", folder], { on });
-+  if (r.code !== 0) return [];
++  if (r.code !== 0) return { root: null, buttons: [] };
 +  const root = r.stdout.trim();
 +  const settings = jsonc((await readTextFile(`${root}/.vscode/settings.json`, { on })) ?? "{}");
 +  const list = settings["VsCodeTaskButtons.tasks"];
-+  if (!Array.isArray(list) || !list.length) return [];
++  if (!Array.isArray(list) || !list.length) return { root, buttons: [] };
 +  const text = await readTextFile(`${root}/.vscode/tasks.json`, { on }).catch(() => null);
 +  const tasks = text ? jsonc(text).tasks ?? [] : [];
-+  return list.filter((b) => b && typeof b === "object").map((b) => resolve(b, tasks, root));
++  return { root, buttons: list.filter((b) => b && typeof b === "object").map((b) => resolve(b, tasks, root)) };
 +}
 +
 +const tabOf = (space, b) => space?.tabs.find((tab) => tab.named && tab.name === b.label);
@@ -156,21 +157,47 @@
 +      return;
 +    }
 +    this.cache = {}; // "machine|folder" -> buttons
++    this.roots = {}; // "machine|folder" -> its project's root
++    this.watched = new Set(); // local roots whose .vscode/ is watched
++    this.titles = null; // the task terminals' titles, to notice a task run again by hand
 +    this.key = null;
 +    this.size = null;
 +    this.spaceId = null;
 +    // space id -> label -> running (true), finished (false) or unknown (null).
 +    // Kept per space, so switching back shows the last known states at once.
 +    this.states = {};
-+    cx.timer.every(15000, (cx) => this.reload(cx));
++    // A local project reloads when its .vscode/ changes (watch()); another
++    // machine's can't be watched, so it's looked at again every 15 s.
++    cx.timer.every(15000, (cx) => {
++      if (spaces().find((s) => s.active)?.machine) this.reload(cx);
++    });
 +    cx.timer.every(3000, (cx) => this.poll(cx));
 +  }
 +
-+  // Only while the space has task tabs.
-+  poll(cx) {
++  watch(root, cx) {
++    if (this.watched.has(root)) return;
++    this.watched.add(root);
++    cx.spawn(async (cx) => {
++      for (;;) {
++        try {
++          await watchFolder(`${root}/.vscode`);
++        } catch {
++          this.watched.delete(root);
++          return;
++        }
++        if (this.key && this.roots[this.key] === root) this.reload(cx);
++      }
++    });
++  }
++
++  // Only while the space has task tabs, and not once they've all finished:
++  // then a click (force) or a task terminal's title changing looks again.
++  poll(cx, force = false) {
 +    const space = spaces().find((s) => s.active);
 +    const buttons = (this.key && this.cache[this.key]) || [];
 +    if (!space) return;
++    const known = Object.values(this.states[space.id] ?? {});
++    if (!force && known.length && known.every((s) => s === false)) return;
 +    if (!buttons.some((b) => tabOf(space, b))) {
 +      if (this.states[space.id]) {
 +        delete this.states[space.id];
@@ -189,7 +216,7 @@
 +  click(spaceId, b, cx) {
 +    cx.spawn(async (cx) => {
 +      await launch(spaceId, b);
-+      this.poll(cx);
++      this.poll(cx, true);
 +    });
 +  }
 +
@@ -199,13 +226,18 @@
 +    this.key = key;
 +    if (!key) return;
 +    cx.spawn(async (cx) => {
++      let changed = false;
 +      try {
-+        this.cache[key] = await load(space, folderOf(space));
++        const { root, buttons } = await load(space, folderOf(space));
++        changed = JSON.stringify(buttons) !== JSON.stringify(this.cache[key]);
++        this.cache[key] = buttons;
++        this.roots[key] = root;
++        if (root && !space.machine) this.watch(root, cx);
 +      } catch {
 +        // Unreachable machine or a broken file: keep what was there.
 +      }
-+      this.poll(cx);
-+      cx.notify();
++      this.poll(cx, true);
++      if (changed) cx.notify();
 +    });
 +  }
 +
@@ -279,7 +311,15 @@
 +    if (key !== this.key) this.reload(cx);
 +    if (space?.id !== this.spaceId) {
 +      this.spaceId = space?.id ?? null;
-+      this.poll(cx);
++      this.poll(cx, true);
++    }
++    const titles = ((key && this.cache[key]) || []).map((b) => {
++      const tab = tabOf(space, b);
++      return tab ? panes().find((p) => p.tab === tab.id && p.terminal)?.title ?? "" : "";
++    }).join("\n");
++    if (titles !== this.titles) {
++      this.titles = titles;
++      this.poll(cx, true);
 +    }
      const list = agents();
      const needs = list.filter(a => a.status === "blocked").length;

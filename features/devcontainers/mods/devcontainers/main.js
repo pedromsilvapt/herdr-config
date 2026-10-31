@@ -4,7 +4,13 @@
 // devcontainer.local_folder), from local spaces whose folder has a
 // devcontainer config, and from Add folder. A container becomes a herdr-core
 // machine reached with `herdr-dc-via` (docker exec) instead of ssh. Synced at
-// start, every 10 s, on Refresh and on the `devcontainers.refresh` key.
+// start, when the panel opens, on Refresh and on the `devcontainers.refresh`
+// key; nothing watches containers in the background. After an action (start,
+// stop, delete, create) it syncs every 2 s until the container is in the state
+// asked for, the action fails or a minute passes (for create, a minute from
+// the end of the build). A container changed outside Herdr shows as it was
+// until then, except that selecting a space whose machine went away looks
+// again.
 //
 // hc only saves a machine it can reach, and the bridge never starts a
 // container, so a stopped one is added the first time it runs. Selecting a
@@ -21,14 +27,15 @@
 // container; otherwise the next sync would bring it back.
 //
 // Two copies in the `dev` layout: the panel, and a headless floating one
-// (props.headless) that draws nothing but is always shown, so the sync runs
-// from launch even while the panel is closed. A shared lock keeps them from
+// (props.headless) that draws nothing but is always shown, so the start sync
+// runs from launch and a space on a stopped container wakes it even while the
+// panel is closed. A shared lock keeps them from
 // writing at once. The build window's title bar is this mod too (props.part
 // "bar").
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { exec, hc, home, theme, run, notify, props, shared, setShared, spaces, focused, machines, nextCommand, pickFolder, openOverlay, closeOverlay } from "herdr";
+import { exec, hc, home, theme, run, notify, props, shared, setShared, spaces, focused, machines, terminals, layout, nextCommand, pickFolder, openOverlay, closeOverlay } from "herdr";
 
 const I = (name) => `mods/workspace-chrome/${name}.svg`;
 const OWNED = "devcontainers.machines";
@@ -42,6 +49,17 @@ const basename = (p) => p.replace(/\/+$/, "").split("/").pop() ?? p;
 const slug = (s) => s.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "") || "devcontainer";
 const tilde = (p) => (p.startsWith(home()) ? "~" + p.slice(home().length) : p);
 const ORDER = { running: 0, stopped: 1, uncreated: 2 };
+// The state an action leaves its container in.
+const EXPECT = { starting: "running", opening: "running", stopping: "stopped", deleting: "uncreated" };
+
+function find(node, id) {
+  if (node?.id === id) return node;
+  for (const child of node?.children ?? []) {
+    const found = find(child, id);
+    if (found) return found;
+  }
+  return null;
+}
 
 // ok | missing | noconfig for each folder, in one call.
 const HEALTH = 'for f; do if [ ! -d "$f" ]; then echo missing; elif [ -f "$f/.devcontainer/devcontainer.json" ] || [ -f "$f/.devcontainer.json" ]; then echo ok; else echo noconfig; fi; done';
@@ -99,16 +117,39 @@ export default class Devcontainers extends View {
     this.building = {}; // folder -> address of its `devcontainer up` terminal
     this.openAfter = new Set(); // folders to open a space on once their machine is ready
     this.checked = new Set(); // local space folders already looked at
+    this.expect = {}; // folder -> { state, until }: an action's outcome, synced for until it shows
+    this.waiting = false;
     this.syncing = false;
     this.lastSync = null;
-    this.sync(cx);
-    cx.timer.every(10000, (cx) => this.sync(cx));
+    this.shown = false;
+    if (props()?.headless) this.sync(cx);
+    else {
+      // A hidden block isn't rendered, so render can't see the panel close and
+      // reopen; this only reads the layout (no docker) and syncs on opening.
+      this.watchShown(cx);
+      cx.timer.every(500, (cx) => this.watchShown(cx));
+    }
     cx.spawn(async (cx) => {
       for (;;) {
         const c = await nextCommand();
         if (c === "refresh") this.sync(cx, true);
       }
     });
+  }
+
+  // Shown: the dev layout's panel is open on this mod. Outside that stack
+  // (another layout), showing at all counts.
+  isShown() {
+    const root = layout();
+    const body = find(root, "panel-body");
+    if (!body?.children?.some((c) => c.id === "devcontainers")) return true;
+    return !find(root, "panel")?.hidden && body.active === "devcontainers";
+  }
+
+  watchShown(cx) {
+    const now = this.isShown();
+    if (now && !this.shown) this.sync(cx);
+    this.shown = now;
   }
 
   // A lock older than a minute is from a copy that went away mid-sync.
@@ -137,6 +178,7 @@ export default class Devcontainers extends View {
       // Another copy is writing: just show what's there.
       cx.spawn(async (cx) => {
         await this.reconcile(false).catch(() => null);
+        this.settle();
         cx.notify();
       });
       return;
@@ -153,7 +195,62 @@ export default class Devcontainers extends View {
       }
       this.syncing = false;
       this.lastSync = new Date();
+      this.settle();
       cx.notify();
+    });
+  }
+
+  // Drops the actions whose container got where they were going, failed or
+  // ran out of time.
+  settle() {
+    const now = Date.now();
+    for (const [folder, e] of Object.entries(this.expect)) {
+      const item = this.items?.find((i) => i.folder === folder);
+      const done =
+        e.state === "uncreated"
+          ? !item || item.state === "uncreated"
+          : e.state === "stopped"
+            ? item?.state === "stopped"
+            : item?.state === "running" && item.added && machines().find((m) => m.name === item.name)?.layout === "ready";
+      if (done || item?.error || this.errors[folder]) delete this.expect[folder];
+      else if (e.until !== null && now > e.until) {
+        delete this.expect[folder];
+        if (this.busy[folder] === "creating") delete this.busy[folder];
+        this.openAfter.delete(folder);
+        this.errors[folder] = `Still not ${e.state} after a minute.`;
+      }
+    }
+  }
+
+  // A quiet sync: writes when it gets the lock, else only reads.
+  async look() {
+    if (this.lock()) await this.reconcile().catch(() => null).finally(() => setShared(LOCK, null));
+    else await this.reconcile(false).catch(() => null);
+    this.settle();
+  }
+
+  // Syncs every 2 s while an action waits for its container. A create's
+  // minute starts when its build terminal ends; until then nothing runs
+  // (terminals() is Herdr's own list, no hc call).
+  waitFor(cx) {
+    if (this.waiting || !Object.keys(this.expect).length) return;
+    this.waiting = true;
+    cx.spawn(async (cx) => {
+      while (Object.keys(this.expect).length) {
+        await cx.sleep(2000);
+        let due = false;
+        for (const [folder, e] of Object.entries(this.expect)) {
+          const address = this.building[folder];
+          const building = address && terminals().some((t) => t.address === address && t.state === "live");
+          if (building) continue;
+          if (e.until === null) e.until = Date.now() + 60000;
+          due = true;
+        }
+        if (!due) continue;
+        await this.look();
+        cx.notify();
+      }
+      this.waiting = false;
     });
   }
 
@@ -386,7 +483,10 @@ export default class Devcontainers extends View {
         else if (what === "removing") await this.remove(item);
         else if (what === "creating") {
           await this.create(item);
-          return; // busy until the container runs or the build ends
+          // Busy until the container runs or the build ends.
+          this.expect[key] = { state: "running", until: null };
+          this.waitFor(cx);
+          return;
         } else {
           if (!item.c.running || !item.added) {
             notify({ title: `Starting ${item.name}…`, level: "info", timeout: 3000 });
@@ -402,9 +502,10 @@ export default class Devcontainers extends View {
         delete this.busy[key];
         this.errors[key] = String(e?.message ?? e);
       }
-      if (this.lock()) await this.reconcile().catch(() => null).finally(() => setShared(LOCK, null));
-      else await this.reconcile(false).catch(() => null);
+      if (item && EXPECT[what] && !this.errors[key]) this.expect[key] = { state: EXPECT[what], until: Date.now() + 60000 };
+      await this.look();
       cx.notify();
+      this.waitFor(cx);
     });
   }
 
@@ -487,11 +588,21 @@ export default class Devcontainers extends View {
   }
 
   // Selecting a space on a stopped container starts it. Called from render,
-  // where cx.notify() throws, so act() runs on the next tick.
+  // where cx.notify() throws, so act() runs on the next tick. One that still
+  // looks running while its machine is unavailable may have been stopped
+  // outside Herdr since the last sync: that syncs once, to look again.
   wake(cx) {
     const sp = spaces().find((s) => s.id === focused()?.space);
     const item = sp?.machine && this.items?.find((i) => i.name === sp.machine && i.added);
-    if (!item || item.state !== "stopped" || this.busy[item.folder] || this.waking) return;
+    if (!item || this.busy[item.folder] || this.waking) return;
+    const gone = machines().find((m) => m.name === item.name)?.layout === "unavailable";
+    if (!gone && this.rechecked === item.name) this.rechecked = null;
+    if (item.state === "running" && gone && this.rechecked !== item.name && !this.syncing) {
+      this.rechecked = item.name;
+      cx.timer.after(0, (cx) => this.sync(cx));
+      return;
+    }
+    if (item.state !== "stopped") return;
     this.waking = true;
     cx.timer.after(0, (cx) => {
       this.waking = false;
