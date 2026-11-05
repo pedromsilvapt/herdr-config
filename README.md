@@ -10,7 +10,7 @@ herdr/
     ├── devcontainers/
     │   ├── mods/devcontainers/   the panel and the background sync
     │   ├── mods/dc-ports/        the Ports panel (port forwarding)
-    │   ├── ports/                herdr-dc-ports, a static Go helper → ~/.local/lib/herdr + ~/.local/bin
+    │   ├── herdr-dc/             herdr-dc, a static Go helper → ~/.local/lib/herdr + ~/.local/bin
     │   ├── bin/herdr-dc-via      docker exec bridge → ~/.local/bin
     │   └── keys.json             ctrl-alt-shift-d, added to your keys.json
     ├── vscode-tasks-status/
@@ -24,7 +24,7 @@ herdr/
 
 Three additions to the Herdr app, all shown in a custom `dev` layout. Copies of
 the files that live in `~/.config/herdr-app/` (plus scripts in `~/.local/bin/`
-and the `herdr-dc-ports` builds in `~/.local/lib/herdr/`), so they can be put
+and the `herdr-dc` builds in `~/.local/lib/herdr/`), so they can be put
 back after a reinstall or a reset.
 
 ```sh
@@ -54,7 +54,7 @@ Cloned from the shipped `main` layout (v0.1.9). Changes:
 |---|---|
 | `mods/devcontainers/` | `mods/devcontainers/` |
 | `mods/dc-ports/` | `mods/dc-ports/` |
-| `ports/` (Go) | built to `~/.local/lib/herdr/herdr-dc-ports-linux-{amd64,arm64}`, host's linked as `~/.local/bin/herdr-dc-ports` |
+| `herdr-dc/` (Go) | built to `~/.local/lib/herdr/herdr-dc-linux-{amd64,arm64}`, host's linked as `~/.local/bin/herdr-dc` |
 | `bin/herdr-dc-via` | `~/.local/bin/herdr-dc-via` |
 | `keys.json` | merged into `keys.json` (`ctrl-alt-shift-d` → `devcontainers.refresh`) |
 
@@ -77,7 +77,7 @@ space whose machine went away syncs once.
 Needs: `docker`, and `@devcontainers/cli`
 (`npm i -g --prefix ~/.local @devcontainers/cli`).
 
-#### Ports panel — `mods/dc-ports/`, `ports/`
+#### Ports panel — `mods/dc-ports/`, `herdr-dc/`
 
 Lists the listening TCP ports of every running devcontainer (process name, and
 the bind address when it's loopback only), and forwards one to this computer
@@ -87,14 +87,16 @@ notice the panel reopening; it never runs docker). A forward takes the same
 port on `127.0.0.1` when it's free, a random one otherwise; click
 `localhost:N` to open it in the browser, `×` to stop it.
 
-Like VS Code shipping its server, `herdr-dc-ports` copies itself into the
-container (`/tmp/.herdr-dc/`, piped through `docker exec`, again whenever its
-version changes), since containers rarely have socat or nc:
-- `scan <id>` lists ports from `/proc/net/tcp{,6}` (skips Docker's DNS on
+Like VS Code shipping its server, `herdr-dc` copies itself into the
+container (piped through `docker exec`, again whenever its version changes),
+since containers rarely have socat or nc. It goes in `/tmp/.herdr-dc/`, or
+`/var/tmp/.herdr-dc/` or the remote user's `~/.cache/herdr-dc/` when `/tmp` is
+`noexec`; `/tmp/.herdr-dc/dir` says which.
+- `ports scan <id>` lists ports from `/proc/net/tcp{,6}` (skips Docker's DNS on
   `127.0.0.11` and herdr-core's own sockets).
-- `forward <id> <port>` serves localhost and connects to the container's IP.
+- `ports forward <id> <port>` serves localhost and connects to the container's IP.
   A server on loopback only can't be reached that way, so it starts
-  `relay` inside the container (`docker exec -i`), listening on the
+  `in relay` inside the container (`docker exec -i`), listening on the
   container's IP; the relay ends when the forward does (stdin closes).
 
 Each forward is an hc background terminal named `pf-<container id>-<port>`
@@ -104,6 +106,14 @@ no longer running.
 
 Needs: `go` to build (`install.sh` skips it with a warning otherwise; it
 rebuilds only when the source changes).
+
+#### Configuration — `~/.config/herdr-dc/config.json`
+
+Optional; a missing file or key means the default.
+- `dockerPath` (`"docker"`): the docker CLI to use, e.g. `podman` or a full
+  path when `docker` isn't on the app's `PATH`. Used by `herdr-dc`,
+  `herdr-dc-via`, both mods (read once, at app start) and `devcontainer up
+  --docker-path`.
 
 ### 2. VS Code tasks in the status bar — `features/vscode-tasks-status/`
 

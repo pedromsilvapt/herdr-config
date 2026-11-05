@@ -3,9 +3,9 @@
 // clicked. A forward takes the same port here when it's free, a random one
 // otherwise.
 //
-// The work is done by `herdr-dc-ports` (a static binary from ports/ in this
-// feature): `scan <id>` copies it into the container and lists listening
-// ports; `forward <id> <port>` serves localhost and passes connections on,
+// The work is done by `herdr-dc` (a static binary from herdr-dc/ in this
+// feature): `ports scan <id>` copies it into the container and lists listening
+// ports; `ports forward <id> <port>` serves localhost and passes connections on,
 // through a relay inside the container when the server listens on loopback
 // only. Each forward runs in its own hc terminal, named pf-<id>-<port>, with
 // the port it got as the label dc.host_port, so forwards survive the app
@@ -13,11 +13,11 @@
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { exec, hc, theme, notify, shared, spaces, focused, layout } from "herdr";
+import { exec, hc, home, theme, notify, shared, spaces, focused, layout } from "herdr";
 
 const I = (name) => `mods/workspace-chrome/${name}.svg`;
 const OWNED = "devcontainers.machines";
-const HINT = "herdr-dc-ports isn't installed. Run ./install.sh devcontainers from the herdr customizations repo.";
+const HINT = "herdr-dc isn't installed. Run ./install.sh devcontainers from the herdr customizations repo.";
 
 const basename = (p) => p.replace(/\/+$/, "").split("/").pop() ?? p;
 const termName = (id, port) => `pf-${id}-${port}`;
@@ -29,6 +29,21 @@ function find(node, id) {
     if (found) return found;
   }
   return null;
+}
+
+// dockerPath from herdr-dc's config (~/.config/herdr-dc/config.json), read
+// once; a change takes effect when the app restarts.
+let dockerBin = null;
+async function docker() {
+  if (dockerBin) return dockerBin;
+  const r = await exec("sh", ["-c", 'cat "${XDG_CONFIG_HOME:-$HOME/.config}/herdr-dc/config.json" 2>/dev/null']).catch(() => null);
+  let p = "";
+  try {
+    p = JSON.parse(r?.stdout || "{}").dockerPath ?? "";
+  } catch {}
+  if (p.startsWith("~/")) p = home() + p.slice(1);
+  dockerBin = p || "docker";
+  return dockerBin;
 }
 
 function lastLine(s) {
@@ -68,7 +83,7 @@ export default class Ports extends View {
 
   async bin() {
     if (this.binPath) return this.binPath;
-    const r = await exec("sh", ["-c", "command -v herdr-dc-ports"]).catch(() => null);
+    const r = await exec("sh", ["-c", "command -v herdr-dc"]).catch(() => null);
     if (r?.code !== 0) throw new Error(HINT);
     this.binPath = r.stdout.trim();
     return this.binPath;
@@ -93,7 +108,7 @@ export default class Ports extends View {
 
   async load() {
     const bin = await this.bin();
-    const ps = await exec("docker", ["ps", "--filter", "label=devcontainer.local_folder", "--format", '{{.ID}}\t{{.Label "devcontainer.local_folder"}}']);
+    const ps = await exec(await docker(), ["ps", "--filter", "label=devcontainer.local_folder", "--format", '{{.ID}}\t{{.Label "devcontainer.local_folder"}}']);
     if (ps.code !== 0) throw new Error(ps.stderr.trim() || "docker ps failed");
     const owned = Object.entries(shared(OWNED) ?? {});
     const containers = ps.stdout
@@ -106,7 +121,7 @@ export default class Ports extends View {
       });
     await Promise.all(
       containers.map(async (c) => {
-        const r = await exec(bin, ["scan", c.id]).catch((e) => ({ code: 1, stderr: String(e?.message ?? e) }));
+        const r = await exec(bin, ["ports", "scan", c.id]).catch((e) => ({ code: 1, stderr: String(e?.message ?? e) }));
         if (r.code !== 0) c.error = lastLine(r.stderr) || "scan failed";
         else c.ports = JSON.parse(r.stdout || "[]");
       }),
@@ -167,7 +182,7 @@ export default class Ports extends View {
   async forward(c, port) {
     const bin = await this.bin();
     const name = termName(c.id, port);
-    const r = await hc(["run", "--bg", "--json", "--no-parent", "--name", name, "--label", `dc.container=${c.id}`, "--label", `dc.port=${port}`, "--", bin, "forward", c.id, String(port)]);
+    const r = await hc(["run", "--bg", "--json", "--no-parent", "--name", name, "--label", `dc.container=${c.id}`, "--label", `dc.port=${port}`, "--", bin, "ports", "forward", c.id, String(port)]);
     if (r.code !== 0) throw new Error(lastLine(r.stderr || r.stdout) || "hc run failed");
     // Ready once it labels the port it got; up to ~15 s (a first copy into the container).
     let t = null;
@@ -182,7 +197,7 @@ export default class Ports extends View {
     if (t.state !== "live" || !hostPort) {
       const out = await hc(["read", name]).catch(() => null);
       await this.stopTerminal(name);
-      throw new Error(lastLine(out?.stdout).replace(/^herdr-dc-ports: /, "") || "The forward didn't start.");
+      throw new Error(lastLine(out?.stdout).replace(/^herdr-dc(-ports)?: /, "") || "The forward didn't start.");
     }
     notify({
       title: `Forwarded ${c.name}:${port}`,

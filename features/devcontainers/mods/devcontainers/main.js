@@ -95,6 +95,21 @@ function describe(c) {
 
 const targetOf = (d) => `${BRIDGE} ${d.id} ${d.user} ${d.workdir}`;
 
+// dockerPath from herdr-dc's config (~/.config/herdr-dc/config.json), read
+// once; a change takes effect when the app restarts.
+let dockerBin = null;
+async function docker() {
+  if (dockerBin) return dockerBin;
+  const r = await exec("sh", ["-c", 'cat "${XDG_CONFIG_HOME:-$HOME/.config}/herdr-dc/config.json" 2>/dev/null']).catch(() => null);
+  let p = "";
+  try {
+    p = JSON.parse(r?.stdout || "{}").dockerPath ?? "";
+  } catch {}
+  if (p.startsWith("~/")) p = home() + p.slice(1);
+  dockerBin = p || "docker";
+  return dockerBin;
+}
+
 async function sleep(s) {
   await exec("sleep", [String(s)]).catch(() => null);
 }
@@ -255,11 +270,11 @@ export default class Devcontainers extends View {
   }
 
   async discover() {
-    const ps = await exec("docker", ["ps", "-a", "-q", "--no-trunc", "--filter", "label=devcontainer.local_folder"]);
+    const ps = await exec(await docker(), ["ps", "-a", "-q", "--no-trunc", "--filter", "label=devcontainer.local_folder"]);
     if (ps.code !== 0) throw new Error(ps.stderr.trim() || "docker ps failed");
     const ids = ps.stdout.split("\n").map((s) => s.trim()).filter(Boolean);
     if (!ids.length) return [];
-    const ins = await exec("docker", ["inspect", ...ids]);
+    const ins = await exec(await docker(), ["inspect", ...ids]);
     if (ins.code !== 0) throw new Error(ins.stderr.trim() || "docker inspect failed");
     return JSON.parse(ins.stdout).map(describe);
   }
@@ -381,7 +396,7 @@ export default class Devcontainers extends View {
 
   // Starts the container, adds it if it wasn't, and waits for its core.
   async start(item) {
-    const r = await exec("docker", ["start", item.c.id]);
+    const r = await exec(await docker(), ["start", item.c.id]);
     if (r.code !== 0) throw new Error(r.stderr.trim() || "docker start failed");
     if (!item.added) {
       let why = null;
@@ -406,8 +421,8 @@ export default class Devcontainers extends View {
     const v = await exec("devcontainer", ["--version"]).catch(() => null);
     if (v?.code !== 0) throw new Error(CLI_HINT);
     // A failed build waits for Enter so its output can be read; a good one closes.
-    const script = 'devcontainer up --workspace-folder "$1"; s=$?; [ $s -eq 0 ] && exit 0; echo; echo "devcontainer up failed ($s). Press Enter to close."; read _; exit $s';
-    const r = await hc(["run", "--bg", "--json", "--no-parent", "--name", `dc-up-${item.name}`.slice(0, 32), "--cwd", item.folder, "--", "sh", "-c", script, "_", item.folder]);
+    const script = 'devcontainer up --docker-path "$2" --workspace-folder "$1"; s=$?; [ $s -eq 0 ] && exit 0; echo; echo "devcontainer up failed ($s). Press Enter to close."; read _; exit $s';
+    const r = await hc(["run", "--bg", "--json", "--no-parent", "--name", `dc-up-${item.name}`.slice(0, 32), "--cwd", item.folder, "--", "sh", "-c", script, "_", item.folder, await docker()]);
     let address = null;
     try {
       address = r.code === 0 ? JSON.parse(r.stdout).address : null;
@@ -439,7 +454,7 @@ export default class Devcontainers extends View {
   }
 
   async deleteContainer(item) {
-    const r = await exec("docker", ["rm", "-f", item.c.id]);
+    const r = await exec(await docker(), ["rm", "-f", item.c.id]);
     if (r.code !== 0) throw new Error(r.stderr.trim() || "docker rm failed");
     await this.locked(async () => {
       const owned = { ...(shared(OWNED) ?? {}) };
@@ -477,7 +492,7 @@ export default class Devcontainers extends View {
       try {
         if (what === "adding") await this.addFolder();
         else if (what === "stopping") {
-          const r = await exec("docker", ["stop", item.c.id]);
+          const r = await exec(await docker(), ["stop", item.c.id]);
           if (r.code !== 0) throw new Error(r.stderr.trim() || "docker stop failed");
         } else if (what === "deleting") await this.deleteContainer(item);
         else if (what === "removing") await this.remove(item);

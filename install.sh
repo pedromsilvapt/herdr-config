@@ -32,6 +32,10 @@ for feature in "$@"; do
       echo "$feature: $bin/$(basename "$f")"
     done
   fi
+  if [ "$feature" = devcontainers ]; then
+    # herdr-dc was herdr-dc-ports before; drop the old builds.
+    rm -f "$bin/herdr-dc-ports" "$lib"/herdr-dc-ports*
+  fi
   for mod in "$dir"/*/go.mod; do
     [ -f "$mod" ] || continue
     # A Go helper: static builds for both Linux architectures (one may be copied

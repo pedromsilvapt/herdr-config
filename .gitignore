@@ -2,5 +2,5 @@
 gpui-kit.d.ts
 jsconfig.json
 
-# go build run by hand in ports/
-/features/devcontainers/ports/herdr-dc-ports
+# go build run by hand in herdr-dc/
+/features/devcontainers/herdr-dc/herdr-dc

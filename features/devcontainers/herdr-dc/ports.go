@@ -1,19 +1,3 @@
-// herdr-dc-ports: the Ports panel's helper. One static binary that runs on the
-// host and is copied into devcontainers (like VS Code ships its server), since
-// they rarely have socat or nc.
-//
-//	scan <container>            (host) list the container's listening ports, as JSON
-//	forward <container> <port>  (host) serve localhost:<port>, or a random port when
-//	                            that one is taken, and pass connections to the container
-//	ensure <container>          (host) copy this binary into the container if needed
-//	ports                       (container) list listening ports, as JSON
-//	relay <bindIP> <target>     (container) serve <bindIP>:<random> → <target>, print
-//	                            the port, exit when stdin closes
-//	version
-//
-// A server on 0.0.0.0 or :: is reached at the container's IP. One on loopback
-// only can't be, so forward starts a relay inside the container through
-// `docker exec -i`; it ends when that exec does.
 package main
 
 import (
@@ -27,71 +11,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
 	"syscall"
 )
-
-// Set at build time (install.sh) to a hash of this source, so a changed build is copied again.
-var version = "dev"
-
-// Where the binary lives inside a container.
-const (
-	remoteDir = "/tmp/.herdr-dc"
-	remoteBin = remoteDir + "/herdr-dc-ports"
-)
-
-func main() {
-	if len(os.Args) < 2 {
-		usage()
-	}
-	var err error
-	switch args := os.Args[2:]; os.Args[1] {
-	case "version", "--version":
-		fmt.Println(version)
-	case "ports":
-		err = printPorts()
-	case "relay":
-		need(args, 2)
-		err = relay(args[0], args[1])
-	case "ensure":
-		need(args, 1)
-		err = ensure(args[0])
-	case "scan":
-		need(args, 1)
-		err = scan(args[0])
-	case "forward":
-		need(args, 2)
-		port, perr := strconv.Atoi(args[1])
-		if perr != nil {
-			fail(fmt.Errorf("not a port: %s", args[1]))
-		}
-		err = forward(args[0], port)
-	default:
-		usage()
-	}
-	if err != nil {
-		fail(err)
-	}
-}
-
-func usage() {
-	fmt.Fprintln(os.Stderr, "usage: herdr-dc-ports scan|forward|ensure|ports|relay|version ...")
-	os.Exit(2)
-}
-
-func need(args []string, n int) {
-	if len(args) < n {
-		usage()
-	}
-}
-
-func fail(err error) {
-	fmt.Fprintln(os.Stderr, "herdr-dc-ports:", err)
-	os.Exit(1)
-}
 
 // ---- In the container ----
 
@@ -134,7 +58,7 @@ func listening() ([]Port, error) {
 				continue
 			}
 			proc := owners[f[9]]
-			if proc == "herdr-core" || proc == "herdr-dc-ports" {
+			if proc == "herdr-core" || proc == binName || proc == "herdr-dc-ports" {
 				continue
 			}
 			p := byPort[port]
@@ -229,77 +153,8 @@ func relay(bindIP, target string) error {
 
 // ---- On the host ----
 
-func docker(args ...string) (string, error) {
-	out, err := exec.Command("docker", args...).Output()
-	if err != nil {
-		var ee *exec.ExitError
-		if errors.As(err, &ee) && len(ee.Stderr) > 0 {
-			return "", errors.New(strings.TrimSpace(string(ee.Stderr)))
-		}
-		return "", err
-	}
-	return strings.TrimSpace(string(out)), nil
-}
-
-// Copies the build for the container's architecture to remoteBin, unless the
-// same version is already there. The builds sit next to this binary's real path.
-func ensure(id string) error {
-	if have, _ := docker("exec", id, remoteBin, "version"); have == version && version != "dev" {
-		return nil
-	}
-	arch, err := docker("exec", id, "uname", "-m")
-	if err != nil {
-		return err
-	}
-	goarch := map[string]string{"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64"}[arch]
-	if goarch == "" {
-		return fmt.Errorf("no build for the container's architecture (%s)", arch)
-	}
-	src, err := buildFor(goarch)
-	if err != nil {
-		return err
-	}
-	// Piped through cat rather than `docker cp`, which can't write into a tmpfs
-	// /tmp. Written under a temporary name and moved into place, so two at once
-	// can't leave a half-written binary.
-	f, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	tmp := fmt.Sprintf("%s.%d", remoteBin, os.Getpid())
-	cmd := exec.Command("docker", "exec", "-i", "-u", "root", id, "sh", "-c",
-		`mkdir -p "$1" && cat > "$2" && chmod 755 "$2" && mv -f "$2" "$3"`, "_", remoteDir, tmp, remoteBin)
-	cmd.Stdin = f
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("copying into the container: %s", strings.TrimSpace(string(out)))
-	}
-	return nil
-}
-
-func buildFor(goarch string) (string, error) {
-	self, err := os.Executable()
-	if err == nil {
-		self, err = filepath.EvalSymlinks(self)
-	}
-	if err != nil {
-		return "", err
-	}
-	if goarch == runtime.GOARCH {
-		return self, nil
-	}
-	other := filepath.Join(filepath.Dir(self), "herdr-dc-ports-linux-"+goarch)
-	if _, err := os.Stat(other); err != nil {
-		return "", fmt.Errorf("missing %s; run install.sh", other)
-	}
-	return other, nil
-}
-
-func remotePorts(id string) ([]Port, error) {
-	if err := ensure(id); err != nil {
-		return nil, err
-	}
-	out, err := docker("exec", "-u", "root", id, remoteBin, "ports")
+func remotePorts(id, bin string) ([]Port, error) {
+	out, err := docker("exec", "-u", "root", id, bin, "in", "ports")
 	if err != nil {
 		return nil, err
 	}
@@ -308,7 +163,11 @@ func remotePorts(id string) ([]Port, error) {
 }
 
 func scan(id string) error {
-	ports, err := remotePorts(id)
+	bin, err := ensure(id)
+	if err != nil {
+		return err
+	}
+	ports, err := remotePorts(id, bin)
 	if err != nil {
 		return err
 	}
@@ -316,12 +175,19 @@ func scan(id string) error {
 }
 
 func containerIP(id string) (string, error) {
-	out, err := docker("inspect", "-f", "{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}", id)
+	c, err := inspect(id)
 	if err != nil {
 		return "", err
 	}
-	if f := strings.Fields(out); len(f) > 0 {
-		return f[0], nil
+	names := make([]string, 0, len(c.NetworkSettings.Networks))
+	for name := range c.NetworkSettings.Networks {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if ip := c.NetworkSettings.Networks[name].IPAddress; ip != "" {
+			return ip, nil
+		}
 	}
 	return "", errors.New("the container has no IP address (host network? its ports are already on the host)")
 }
@@ -331,7 +197,11 @@ func forward(id string, port int) error {
 	if err != nil {
 		return err
 	}
-	ports, err := remotePorts(id)
+	bin, err := ensure(id)
+	if err != nil {
+		return err
+	}
+	ports, err := remotePorts(id, bin)
 	if err != nil {
 		return err
 	}
@@ -358,7 +228,7 @@ func forward(id string, port int) error {
 	target := net.JoinHostPort(ip, strconv.Itoa(port))
 	via := ""
 	if found.Loopback {
-		relayPort, err := startRelay(id, ip, net.JoinHostPort(found.Addr, strconv.Itoa(port)))
+		relayPort, err := startRelay(id, bin, ip, net.JoinHostPort(found.Addr, strconv.Itoa(port)))
 		if err != nil {
 			return err
 		}
@@ -378,11 +248,11 @@ func forward(id string, port int) error {
 // Held so the pipe isn't collected (and closed) while we run.
 var relayStdin io.WriteCloser
 
-// Starts `relay` in the container and returns the port it listens on. The relay
+// Starts `in relay` in the container and returns the port it listens on. The relay
 // lives as long as this process: its stdin is our pipe. If it ends (the
 // container stopped), so do we.
-func startRelay(id, ip, target string) (int, error) {
-	cmd := exec.Command("docker", "exec", "-i", "-u", "root", id, remoteBin, "relay", ip, target)
+func startRelay(id, bin, ip, target string) (int, error) {
+	cmd := dockerCmd("exec", "-i", "-u", "root", id, bin, "in", "relay", ip, target)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return 0, err
