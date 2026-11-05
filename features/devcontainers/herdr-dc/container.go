@@ -202,3 +202,23 @@ func buildFor(goarch string) (string, error) {
 	}
 	return "", fmt.Errorf("missing %s; run install.sh", build)
 }
+
+// Runs a sh script in the container as user, with <dir>/env sourced first so
+// PATH (and the rest) are what herdr terminals get; args are $1…, stdin is
+// given to the script. Returns stdout, trimmed.
+func userSh(id, user, dir, stdin, script string, args ...string) (string, error) {
+	full := append([]string{"exec", "-i", "-u", user, id, "sh", "-c",
+		`if [ -r "$0/env" ]; then . "$0/env"; fi; ` + script, dir}, args...)
+	cmd := dockerCmd(full...)
+	cmd.Stdin = strings.NewReader(stdin)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			return strings.TrimSpace(string(out)), errors.New(msg)
+		}
+		return strings.TrimSpace(string(out)), err
+	}
+	return strings.TrimSpace(string(out)), nil
+}

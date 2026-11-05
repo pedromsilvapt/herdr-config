@@ -6,9 +6,11 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -24,6 +26,12 @@ type agentSocket struct {
 // a desktop launcher that never ran the profile. Asked once per process.
 var loginShellAgent = sync.OnceValue(func() string {
 	return loginShellValue("SSH_AUTH_SOCK")
+})
+
+// The login shell's PATH, for host tools an app started from a launcher
+// can't find.
+var loginShellPath = sync.OnceValue(func() string {
+	return loginShellValue("PATH")
 })
 
 // One variable from the host's login shell ($SHELL -lc), or "".
@@ -104,4 +112,37 @@ func (c *Container) wantsSSHAgent() bool {
 	}
 	_, set := c.definedEnv()["SSH_AUTH_SOCK"]
 	return !set
+}
+
+// `ssh setup <c>`: the host's known_hosts, when the container has ssh and no
+// known_hosts of its own.
+func sshSetup(id string) error {
+	if !config().SSH.KnownHosts {
+		return nil
+	}
+	home, _ := os.UserHomeDir()
+	data, err := os.ReadFile(filepath.Join(home, ".ssh", "known_hosts"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	bin, err := ensure(id)
+	if err != nil {
+		return err
+	}
+	c, err := inspect(id)
+	if err != nil {
+		return err
+	}
+	out, err := userSh(id, c.remoteUser(), path.Dir(bin), string(data), `command -v ssh >/dev/null 2>&1 || { echo "not in the container; skipped"; exit 0; }
+f=$HOME/.ssh/known_hosts
+[ -e "$f" ] && { echo "already in the container; left alone"; exit 0; }
+mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh" && cat > "$f.herdr-dc.tmp" && chmod 644 "$f.herdr-dc.tmp" && mv -f "$f.herdr-dc.tmp" "$f" && echo "copied to $f"`)
+	if err != nil {
+		return err
+	}
+	fmt.Println("ssh: known_hosts", out)
+	return nil
 }

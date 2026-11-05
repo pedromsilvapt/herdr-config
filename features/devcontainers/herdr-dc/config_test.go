@@ -45,3 +45,16 @@ func TestConfigDefaultsSurvivePartialFile(t *testing.T) {
 		t.Error("ssh.agent false ignored")
 	}
 }
+
+func TestGitConfigDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	os.WriteFile(path, []byte(`{"git": {"copyConfig": false}}`), 0o644)
+	c, err := loadConfig(path)
+	if err != nil || c.Git.CopyConfig || !c.Git.SafeDirectory || c.Git.CredentialHelper != "global" || !c.SSH.KnownHosts {
+		t.Errorf("got %+v %+v, %v", c.Git, c.SSH, err)
+	}
+	os.WriteFile(path, []byte(`{"git": {"credentialHelper": "local"}}`), 0o644)
+	if _, err := loadConfig(path); err == nil {
+		t.Error("bad credentialHelper: no error")
+	}
+}

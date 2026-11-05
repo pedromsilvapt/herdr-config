@@ -20,6 +20,8 @@ var setupSteps = []struct {
 	run  func(id string) error
 }{
 	{"env", envSetup},
+	{"git", gitSetup},
+	{"ssh", sshSetup},
 }
 
 func setup(id string, only []string) error {
@@ -99,7 +101,8 @@ func attach(id string) error {
 	}
 
 	serveArgs := []string{"exec", "-i", "-u", user, id, bin, "in", "serve"}
-	dialers := map[string]dialer{}
+	dialers := map[string]dialer{"rpc": rpcDialer(stdLog)}
+	serveArgs = append(serveArgs, "--listen", "rpc="+dir+"/run/rpc.sock")
 	if c.wantsSSHAgent() {
 		serveArgs = append(serveArgs, "--listen", "ssh="+dir+"/run/ssh-agent.sock")
 		dialers["ssh"] = dialAgent
@@ -129,7 +132,11 @@ type statusReport struct {
 	Version   string         `json:"version,omitempty"`
 	Env       int            `json:"env"` // variables in the env file; -1 when there's none
 	Channel   *channelStatus `json:"channel"`
-	SSH       struct {
+	Git       struct {
+		Helper bool     `json:"helper"` // ours is git's credential.helper
+		Copied []string `json:"copied"` // config files that are our copies
+	} `json:"git"`
+	SSH struct {
 		Agent bool         `json:"agent"`
 		Host  *agentSocket `json:"host,omitempty"`
 		Error string       `json:"error,omitempty"`
@@ -155,6 +162,7 @@ func status(id string, asJSON bool) error {
 			r.Env = strings.Count(out, "\nexport ")
 		}
 		r.Channel, _ = channelOf(id, r.User, bin)
+		r.Git.Helper, r.Git.Copied = gitStatusOf(id, r.User, r.Dir)
 	}
 	r.SSH.Agent = c.wantsSSHAgent()
 	if r.SSH.Agent {
@@ -188,6 +196,9 @@ func status(id string, asJSON bool) error {
 		}
 		fmt.Printf("channel    running (pid %d): %s\n", r.Channel.PID, yes(len(kinds) > 0, strings.Join(kinds, ", "), "no listeners"))
 	}
+	fmt.Printf("git        config %s; credential helper %s\n",
+		yes(len(r.Git.Copied) > 0, "copied to "+strings.Join(r.Git.Copied, ", "), "not copied"),
+		yes(r.Git.Helper, "herdr-dc", "not herdr-dc's"))
 	switch {
 	case !r.SSH.Agent:
 		fmt.Println("ssh agent  off (config, or the container sets SSH_AUTH_SOCK)")

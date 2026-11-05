@@ -80,6 +80,18 @@ runs:
   connection: `ssh.agentSocket`, `$SSH_AUTH_SOCK`, the login shell's, then the
   GNOME keyring, systemd, gpg-agent and 1Password paths. Skipped when the
   container sets its own `SSH_AUTH_SOCK`.
+- copies the host's **git config** (`~/.gitconfig`, `~/.config/git/config`)
+  into the remote user's home, marked as ours and copied again on every
+  attach, so host edits arrive without a rebuild. A file the image or dotfiles
+  wrote is left alone unless it only has `[filter]`/`[safe]` sections (kept,
+  above the host's). Credential helpers and `http.sslBackend` are dropped from
+  the copy, and `core.editor`, `core.sshCommand` and `gpg.*.program` when their
+  program isn't in the container; `gpg.ssh.allowedSignersFile` is copied too;
+- sets git's **credential helper** to `herdr-dc git credential`, which asks the
+  host's `git credential fill|approve|reject` over the channel (`rpc.sock`);
+  without a channel, or a host credential, git just prompts as usual;
+- adds the workspace repo to `safe.directory` when another user owns it;
+- copies `~/.ssh/known_hosts` when the container has `ssh` and none of its own.
 
 `herdr-dc status <id>` shows what's set up and which host agent is used;
 `hc read dc-attach-<name>` shows the attach's log.
@@ -134,6 +146,10 @@ Optional; a missing file or key means the default.
   `herdr-dc-via`, both mods (read once, at app start) and `devcontainer up
   --docker-path`.
 - `ssh.agent` (`true`): relay the host's SSH agent into containers.
+- `git.copyConfig` (`true`), `git.safeDirectory` (`true`): the git steps above.
+- `git.credentialHelper` (`"global"`): where to set ours, `global`, `system`
+  (as root) or `none`.
+- `ssh.knownHosts` (`true`): copy `known_hosts`.
 - `ssh.agentSocket` (`""`): the host agent's socket, when it's somewhere the
   search above doesn't look (1Password, Secretive, KeePassXC…).
 

@@ -14,8 +14,14 @@ import (
 // means the default.
 type Config struct {
 	DockerPath string `json:"dockerPath"`
-	SSH        struct {
+	Git        struct {
+		CopyConfig       bool   `json:"copyConfig"`
+		CredentialHelper string `json:"credentialHelper"` // global | system | none
+		SafeDirectory    bool   `json:"safeDirectory"`
+	} `json:"git"`
+	SSH struct {
 		Agent       bool   `json:"agent"`
+		KnownHosts  bool   `json:"knownHosts"`
 		AgentSocket string `json:"agentSocket"`
 	} `json:"ssh"`
 }
@@ -23,7 +29,11 @@ type Config struct {
 // JSON decodes over these, so a key the file leaves out keeps its default.
 func defaultConfig() Config {
 	c := Config{DockerPath: "docker"}
+	c.Git.CopyConfig = true
+	c.Git.CredentialHelper = "global"
+	c.Git.SafeDirectory = true
 	c.SSH.Agent = true
+	c.SSH.KnownHosts = true
 	return c
 }
 
@@ -58,6 +68,13 @@ func loadConfig(path string) (Config, error) {
 	}
 	if c.DockerPath == "" {
 		c.DockerPath = "docker"
+	}
+	switch c.Git.CredentialHelper {
+	case "global", "system", "none":
+	case "":
+		c.Git.CredentialHelper = "global"
+	default:
+		return c, fmt.Errorf("%s: git.credentialHelper must be global, system or none, not %q", path, c.Git.CredentialHelper)
 	}
 	c.DockerPath = expandHome(c.DockerPath)
 	c.SSH.AgentSocket = expandHome(c.SSH.AgentSocket)

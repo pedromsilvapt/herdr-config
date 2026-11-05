@@ -9,6 +9,9 @@
 //	status <c> [--json]           (host) what's set up and whether the channel runs
 //	env setup <c>                 (host) write <dir>/env in the container (env.go)
 //	env print                     (in) that file
+//	git setup <c>                 (host) the host's git config, credential helper, safe.directory (git.go)
+//	git credential <action>       (in) git credential helper, answered by the host over the channel
+//	ssh setup <c>                 (host) the host's known_hosts, when the container has none
 //	ports scan <c>                (host) the container's listening ports, as JSON
 //	ports forward <c> <port>      (host) serve localhost:<port>, or a random port when
 //	                              that one is taken, and pass connections to the container
@@ -55,14 +58,17 @@ var commands = map[string]command{
 	"status": {1, func(a []string) error {
 		return status(a[0], len(a) > 1 && a[1] == "--json")
 	}},
-	"env setup": {1, func(a []string) error { return envSetup(a[0]) }},
-	"env print": {0, func([]string) error { return printEnvFile() }},
-	"in serve":  {0, func(a []string) error { return serveChannel(a) }},
-	"in attach": {1, func(a []string) error { return attachIn(a[0]) }},
-	"in status": {0, func([]string) error { return statusIn() }},
-	"in env":    {0, func([]string) error { return printEnvIn() }},
-	"in ports":  {0, func([]string) error { return printPorts() }},
-	"in relay":  {2, func(a []string) error { return relay(a[0], a[1]) }},
+	"env setup":      {1, func(a []string) error { return envSetup(a[0]) }},
+	"env print":      {0, func([]string) error { return printEnvFile() }},
+	"git setup":      {1, func(a []string) error { return gitSetup(a[0]) }},
+	"git credential": {1, func(a []string) error { return gitCredentialIn(a[0]) }},
+	"ssh setup":      {1, func(a []string) error { return sshSetup(a[0]) }},
+	"in serve":       {0, func(a []string) error { return serveChannel(a) }},
+	"in attach":      {1, func(a []string) error { return attachIn(a[0]) }},
+	"in status":      {0, func([]string) error { return statusIn() }},
+	"in env":         {0, func([]string) error { return printEnvIn() }},
+	"in ports":       {0, func([]string) error { return printPorts() }},
+	"in relay":       {2, func(a []string) error { return relay(a[0], a[1]) }},
 }
 
 func main() {
@@ -95,10 +101,13 @@ func usage() {
   herdr-dc version
   herdr-dc ensure <container>
   herdr-dc attach <container>
-  herdr-dc setup <container> [env]
+  herdr-dc setup <container> [env|git|ssh]…
   herdr-dc status <container> [--json]
   herdr-dc env setup <container>
   herdr-dc env print
+  herdr-dc git setup <container>
+  herdr-dc git credential <get|store|erase>
+  herdr-dc ssh setup <container>
   herdr-dc ports scan <container>
   herdr-dc ports forward <container> <port>
   herdr-dc in serve [--listen kind=/path]…
