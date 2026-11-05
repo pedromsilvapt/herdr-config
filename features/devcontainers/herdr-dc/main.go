@@ -13,6 +13,10 @@
 //	git credential <action>       (in) git credential helper, answered by the host over the channel
 //	ssh setup <c>                 (host) the host's known_hosts, when the container has none
 //	gpg setup <c>                 (host) the host's public keys; the agent is a channel listener (gpg.go)
+//	docker setup <c>              (host) credsStore herdr-dc in the container's docker config (docker.go)
+//	docker credential <action>    (in) docker credential helper, answered by the host over the channel
+//	browser setup <c>             (host) <dir>/browser, the container's BROWSER (browser.go)
+//	browser open <url>…           (in) open URLs in the host's browser, over the channel
 //	ports scan <c>                (host) the container's listening ports, as JSON
 //	ports forward <c> <port>      (host) serve localhost:<port>, or a random port when
 //	                              that one is taken, and pass connections to the container
@@ -59,18 +63,22 @@ var commands = map[string]command{
 	"status": {1, func(a []string) error {
 		return status(a[0], len(a) > 1 && a[1] == "--json")
 	}},
-	"env setup":      {1, func(a []string) error { return envSetup(a[0]) }},
-	"env print":      {0, func([]string) error { return printEnvFile() }},
-	"git setup":      {1, func(a []string) error { return gitSetup(a[0]) }},
-	"git credential": {1, func(a []string) error { return gitCredentialIn(a[0]) }},
-	"ssh setup":      {1, func(a []string) error { return sshSetup(a[0]) }},
-	"gpg setup":      {1, func(a []string) error { return gpgSetup(a[0]) }},
-	"in serve":       {0, func(a []string) error { return serveChannel(a) }},
-	"in attach":      {1, func(a []string) error { return attachIn(a[0]) }},
-	"in status":      {0, func([]string) error { return statusIn() }},
-	"in env":         {0, func([]string) error { return printEnvIn() }},
-	"in ports":       {0, func([]string) error { return printPorts() }},
-	"in relay":       {2, func(a []string) error { return relay(a[0], a[1]) }},
+	"env setup":         {1, func(a []string) error { return envSetup(a[0]) }},
+	"env print":         {0, func([]string) error { return printEnvFile() }},
+	"git setup":         {1, func(a []string) error { return gitSetup(a[0]) }},
+	"git credential":    {1, func(a []string) error { return gitCredentialIn(a[0]) }},
+	"ssh setup":         {1, func(a []string) error { return sshSetup(a[0]) }},
+	"gpg setup":         {1, func(a []string) error { return gpgSetup(a[0]) }},
+	"docker setup":      {1, func(a []string) error { return dockerSetup(a[0]) }},
+	"docker credential": {1, func(a []string) error { return dockerCredentialIn(a[0]) }},
+	"browser setup":     {1, func(a []string) error { return browserSetup(a[0]) }},
+	"browser open":      {1, func(a []string) error { return browserOpenIn(a) }},
+	"in serve":          {0, func(a []string) error { return serveChannel(a) }},
+	"in attach":         {1, func(a []string) error { return attachIn(a[0]) }},
+	"in status":         {0, func([]string) error { return statusIn() }},
+	"in env":            {0, func([]string) error { return printEnvIn() }},
+	"in ports":          {0, func([]string) error { return printPorts() }},
+	"in relay":          {2, func(a []string) error { return relay(a[0], a[1]) }},
 }
 
 func main() {
@@ -103,7 +111,7 @@ func usage() {
   herdr-dc version
   herdr-dc ensure <container>
   herdr-dc attach <container>
-  herdr-dc setup <container> [env|git|ssh|gpg]…
+  herdr-dc setup <container> [env|git|ssh|gpg|docker|browser]…
   herdr-dc status <container> [--json]
   herdr-dc env setup <container>
   herdr-dc env print
@@ -111,6 +119,10 @@ func usage() {
   herdr-dc git credential <get|store|erase>
   herdr-dc ssh setup <container>
   herdr-dc gpg setup <container>
+  herdr-dc docker setup <container>
+  herdr-dc docker credential <get|list|store|erase>
+  herdr-dc browser setup <container>
+  herdr-dc browser open <url>…
   herdr-dc ports scan <container>
   herdr-dc ports forward <container> <port>
   herdr-dc in serve [--listen kind=/path]…

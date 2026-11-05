@@ -230,6 +230,9 @@ func ourEnv(c *Container, dir string) map[string]string {
 	if c.wantsSSHAgent() {
 		env["SSH_AUTH_SOCK"] = dir + "/run/ssh-agent.sock"
 	}
+	if c.wantsBrowser() {
+		env["BROWSER"] = browserScript(dir)
+	}
 	return env
 }
 

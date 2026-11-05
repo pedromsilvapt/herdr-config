@@ -43,6 +43,7 @@ func docker(args ...string) (string, error) {
 
 // The parts of `docker inspect` herdr-dc reads.
 type Container struct {
+	ID     string `json:"Id"`
 	Config struct {
 		User   string
 		Env    []string

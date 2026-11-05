@@ -27,6 +27,13 @@ type Config struct {
 	GPG struct {
 		Agent bool `json:"agent"`
 	} `json:"gpg"`
+	Docker struct {
+		CredentialHelper bool `json:"credentialHelper"`
+	} `json:"docker"`
+	Browser struct {
+		Enabled bool   `json:"enabled"`
+		Command string `json:"command"` // run with the URL as its last argument; "" = xdg-open
+	} `json:"browser"`
 }
 
 // JSON decodes over these, so a key the file leaves out keeps its default.
@@ -38,6 +45,8 @@ func defaultConfig() Config {
 	c.SSH.Agent = true
 	c.SSH.KnownHosts = true
 	c.GPG.Agent = true
+	c.Docker.CredentialHelper = true
+	c.Browser.Enabled = true
 	return c
 }
 

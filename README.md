@@ -99,6 +99,21 @@ runs:
   the host's public keys and ownertrust are imported when it has no keyring
   (with keyboxd on both sides, its socket is relayed instead). Skipped when the
   container has no `gpg`/`gpgconf` or private keys of its own.
+- gives the container's docker CLI the host's **registry credentials**: when
+  the host has some (`credsStore`, `credHelpers`, or `auths` with a token),
+  `credsStore` becomes `herdr-dc` in the remote user's docker config (unless
+  it has a store of its own, like VS Code's), and
+  `/usr/local/bin/docker-credential-herdr-dc` asks the host over the channel,
+  which answers from `credHelpers`, then `auths`, then `credsStore`. `docker
+  login` inside isn't stored on the host (it fails; log in on the host).
+  Skipped without a docker CLI in the container.
+- sets **`BROWSER`** to `<dir>/browser`, which opens http(s) URLs in the host's
+  browser (`xdg-open`, or `browser.command`), detached and never through a
+  shell. A URL on the container's `localhost` is forwarded first, as an hc
+  `pf-<id>-<port>` terminal like the ports panel's (reused when there is one),
+  and rewritten to the host port when it differs, so OAuth callbacks such as
+  `gh auth login --web` work. Without a channel it prints the URL. Skipped when
+  the container sets `BROWSER` itself.
 
 `herdr-dc status <id>` shows what's set up and which host agents are used;
 `hc read dc-attach-<name>` shows the attach's log.
@@ -158,6 +173,10 @@ Optional; a missing file or key means the default.
   (as root) or `none`.
 - `ssh.knownHosts` (`true`): copy `known_hosts`.
 - `gpg.agent` (`true`): relay the host's gpg-agent and import its public keys.
+- `docker.credentialHelper` (`true`): the registry credentials above.
+- `browser.enabled` (`true`), `browser.command` (`""`): `BROWSER` above, and
+  what opens the URL on the host (words split on spaces, URL appended;
+  `xdg-open` when empty).
 - `ssh.agentSocket` (`""`): the host agent's socket, when it's somewhere the
   search above doesn't look (1Password, Secretive, KeePassXC…).
 

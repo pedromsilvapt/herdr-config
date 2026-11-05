@@ -23,6 +23,8 @@ var setupSteps = []struct {
 	{"git", gitSetup},
 	{"ssh", sshSetup},
 	{"gpg", gpgSetup},
+	{"docker", dockerSetup},
+	{"browser", browserSetup},
 }
 
 func setup(id string, only []string) error {
@@ -102,7 +104,7 @@ func attach(id string) error {
 	}
 
 	serveArgs := []string{"exec", "-i", "-u", user, id, bin, "in", "serve"}
-	dialers := map[string]dialer{"rpc": rpcDialer(stdLog)}
+	dialers := map[string]dialer{"rpc": rpcDialer(rpcContext{Container: id, logf: stdLog})}
 	serveArgs = append(serveArgs, "--listen", "rpc="+dir+"/run/rpc.sock")
 	if c.wantsSSHAgent() {
 		serveArgs = append(serveArgs, "--listen", "ssh="+dir+"/run/ssh-agent.sock")
@@ -158,6 +160,14 @@ type statusReport struct {
 		Host    string `json:"host,omitempty"`
 		Error   string `json:"error,omitempty"`
 	} `json:"gpg"`
+	Docker struct {
+		Helper bool   `json:"helper"` // the container's docker config has credsStore herdr-dc
+		Error  string `json:"error,omitempty"`
+	} `json:"docker"`
+	Browser struct {
+		Enabled bool   `json:"enabled"`
+		Script  string `json:"script,omitempty"`
+	} `json:"browser"`
 }
 
 // Read only: never copies the binary or starts anything.
@@ -188,6 +198,13 @@ func status(id string, asJSON bool) error {
 		if _, err := gpgPlan(id, r.User, r.Dir, false); err != nil {
 			r.GPG.Error = err.Error()
 		}
+		r.Docker.Helper = dockerStatusOf(id, r.User, r.Dir)
+		if r.Browser.Enabled = c.wantsBrowser(); r.Browser.Enabled {
+			r.Browser.Script = browserScript(r.Dir)
+		}
+	}
+	if _, err := dockerPlan(); err != nil {
+		r.Docker.Error = err.Error()
 	}
 	if p, err := hostGPGSocket("agent-extra-socket", "gpg-agent", false); err == nil {
 		r.GPG.Host = p
@@ -243,6 +260,15 @@ func status(id string, asJSON bool) error {
 	default:
 		fmt.Println("gpg agent  not relayed (no channel, or it started before gpg could be)")
 	}
+	switch {
+	case r.Docker.Helper && r.Docker.Error == "":
+		fmt.Println("docker     credsStore herdr-dc, answered by the host")
+	case r.Docker.Error != "":
+		fmt.Printf("docker     not set up: %s\n", r.Docker.Error)
+	default:
+		fmt.Println("docker     not set up (no docker CLI, or a credsStore of its own)")
+	}
+	fmt.Printf("browser    %s\n", yes(r.Browser.Enabled, "BROWSER="+r.Browser.Script+" opens URLs on the host", "off (config, or the container sets BROWSER)"))
 	return nil
 }
 

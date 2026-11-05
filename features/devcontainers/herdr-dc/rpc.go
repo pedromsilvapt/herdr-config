@@ -1,7 +1,7 @@
 package main
 
-// RPC over the channel: tools in the container (`git credential`, later
-// `docker credential` and `browser open`) ask the host for one thing each.
+// RPC over the channel: tools in the container (`git credential`, `docker
+// credential` and `browser open`) ask the host for one thing each.
 // One request per connection on <dir>/run/rpc.sock, a JSON line each way.
 // The ops are a fixed list; nothing here runs a command the container picks.
 
@@ -32,8 +32,16 @@ type Response struct {
 
 const rpcMax = 1 << 20
 
-var rpcOps = map[string]func(Request) Response{
-	"git-credential": gitCredentialHost,
+// What an op knows about where the request came from.
+type rpcContext struct {
+	Container string // the container's id; "" in tests
+	logf      func(string, ...any)
+}
+
+var rpcOps = map[string]func(rpcContext, Request) Response{
+	"git-credential":    func(_ rpcContext, r Request) Response { return gitCredentialHost(r) },
+	"docker-credential": func(_ rpcContext, r Request) Response { return dockerCredentialHost(r) },
+	"browser":           browserHost,
 }
 
 func refuse(format string, a ...any) Response {
@@ -41,7 +49,7 @@ func refuse(format string, a ...any) Response {
 }
 
 // Answers one request on c, then closes it.
-func serveRPC(c net.Conn, logf func(string, ...any)) {
+func serveRPC(c net.Conn, ctx rpcContext) {
 	defer c.Close()
 	c.SetReadDeadline(time.Now().Add(30 * time.Second))
 	line, err := bufio.NewReaderSize(io.LimitReader(c, rpcMax), 64<<10).ReadBytes('\n')
@@ -56,14 +64,14 @@ func serveRPC(c net.Conn, logf func(string, ...any)) {
 	} else if op := rpcOps[req.Op]; op == nil {
 		resp = refuse("unknown op %q", req.Op)
 	} else {
-		resp = op(req)
-		logf("rpc %s %v: exit %d", req.Op, req.Args, resp.Code)
+		resp = op(ctx, req)
+		ctx.logf("rpc %s %v: exit %d", req.Op, req.Args, resp.Code)
 	}
 	json.NewEncoder(c).Encode(resp)
 }
 
 // The rpc kind's host end: one end of a socket pair, the other answered here.
-func rpcDialer(logf func(string, ...any)) dialer {
+func rpcDialer(ctx rpcContext) dialer {
 	return func() (net.Conn, error) {
 		fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM|syscall.SOCK_CLOEXEC, 0)
 		if err != nil {
@@ -84,7 +92,7 @@ func rpcDialer(logf func(string, ...any)) dialer {
 			ours.Close()
 			return nil, err
 		}
-		go serveRPC(ours, logf)
+		go serveRPC(ours, ctx)
 		return theirs, nil
 	}
 }

@@ -12,7 +12,7 @@ import (
 )
 
 func rpcOnce(t *testing.T, line string) Response {
-	c, err := rpcDialer(t.Logf)()
+	c, err := rpcDialer(rpcContext{logf: t.Logf})()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +49,7 @@ func TestGitCredentialThroughChannel(t *testing.T) {
 	sock := filepath.Join(run, "rpc.sock")
 	serve := self(run, "in", "serve", "--listen", "rpc="+sock)
 	transport := execTransport{func(n int) *exec.Cmd { return self(run, "in", "attach", strconv.Itoa(n)) }}
-	go runChannel(serve, transport, map[string]dialer{"rpc": rpcDialer(t.Logf)}, t.Logf)
+	go runChannel(serve, transport, map[string]dialer{"rpc": rpcDialer(rpcContext{logf: t.Logf})}, t.Logf)
 	defer func() { serve.Process.Signal(os.Interrupt) }()
 	waitFor(t, sock)
 
