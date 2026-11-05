@@ -37,6 +37,17 @@ type Config struct {
 	Ports struct {
 		AutoForward bool `json:"autoForward"`
 	} `json:"ports"`
+	Display struct {
+		X11     bool `json:"x11"`
+		Wayland bool `json:"wayland"`
+	} `json:"display"`
+	// devcontainer up's --dotfiles-* flags, for containers herdr creates.
+	// Paths are the container's, so ~ stays as is.
+	Dotfiles struct {
+		Repository     string `json:"repository"` // "" = none; owner/repo means GitHub
+		InstallCommand string `json:"installCommand"`
+		TargetPath     string `json:"targetPath"`
+	} `json:"dotfiles"`
 }
 
 // JSON decodes over these, so a key the file leaves out keeps its default.
@@ -51,6 +62,9 @@ func defaultConfig() Config {
 	c.Docker.CredentialHelper = true
 	c.Browser.Enabled = true
 	c.Ports.AutoForward = true
+	c.Display.X11 = true
+	c.Display.Wayland = true
+	c.Dotfiles.TargetPath = "~/dotfiles"
 	return c
 }
 

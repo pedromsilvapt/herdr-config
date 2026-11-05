@@ -253,7 +253,11 @@ func envSetup(id string) error {
 		fmt.Fprintln(os.Stderr, "env: userEnvProbe:", err)
 		probe = map[string]string{}
 	}
-	f := buildEnv(probe, c, os.LookupEnv, ourEnv(c, dir))
+	ours := ourEnv(c, dir)
+	for k, v := range displayEnv(c, id, c.remoteUser(), bin, probe) {
+		ours[k] = v
+	}
+	f := buildEnv(probe, c, os.LookupEnv, ours)
 	if err := writeAsRoot(id, dir+"/env", f.render(), "644"); err != nil {
 		return err
 	}

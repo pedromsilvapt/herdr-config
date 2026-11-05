@@ -16,7 +16,8 @@
 // container, so a stopped one is added the first time it runs. Selecting a
 // space on a stopped container, or opening or starting one, starts it;
 // herdr-core reconnects by itself a few seconds later. Create builds one with
-// `devcontainer up` (@devcontainers/cli) in a terminal window.
+// `devcontainer up` (@devcontainers/cli) in a terminal window, with the
+// flags `herdr-dc dotfiles args` prints (dotfiles, the Wayland mount).
 //
 // Clicking a row opens its container (or creates it); right-clicking opens
 // a menu of the rest, a popup copy of this mod (props.menu) that hands its
@@ -26,8 +27,8 @@
 // changed or removed. A folder can leave the list only while it has no
 // container; otherwise the next sync would bring it back.
 //
-// Each running container this mod added gets a `herdr-dc attach` (SSH agent,
-// the env file herdr-dc-via sources) in a background hc terminal named
+// Each running container this mod added gets a `herdr-dc attach` (SSH and
+// GPG agents, X11, the env file herdr-dc-via sources) in a background hc terminal named
 // dc-attach-<name>, labelled dc.container=<id>. Started by the syncs above, not
 // watched: one that ended (its container stopped) is replaced on the next
 // sync while the container runs, and one for an old id (rebuilt) is killed.
@@ -476,9 +477,14 @@ export default class Devcontainers extends View {
   async create(item) {
     const v = await exec("devcontainer", ["--version"]).catch(() => null);
     if (v?.code !== 0) throw new Error(CLI_HINT);
-    // A failed build waits for Enter so its output can be read; a good one closes.
-    const script = 'devcontainer up --docker-path "$2" --workspace-folder "$1"; s=$?; [ $s -eq 0 ] && exit 0; echo; echo "devcontainer up failed ($s). Press Enter to close."; read _; exit $s';
-    const r = await hc(["run", "--bg", "--json", "--no-parent", "--name", `dc-up-${item.name}`.slice(0, 32), "--cwd", item.folder, "--", "sh", "-c", script, "_", item.folder, await docker()]);
+    // Create-time flags from herdr-dc's config (dotfiles, the Wayland mount),
+    // one per line. A failed build waits for Enter so its output can be read;
+    // a good one closes.
+    const bin = await this.herdrDc();
+    const flags = bin ? await exec(bin, ["dotfiles", "args"]).catch(() => null) : null;
+    const extra = flags?.code === 0 ? flags.stdout.split("\n").filter((l) => l !== "") : [];
+    const script = 'f=$1 d=$2; shift 2; devcontainer up --docker-path "$d" --workspace-folder "$f" "$@"; s=$?; [ $s -eq 0 ] && exit 0; echo; echo "devcontainer up failed ($s). Press Enter to close."; read _; exit $s';
+    const r = await hc(["run", "--bg", "--json", "--no-parent", "--name", `dc-up-${item.name}`.slice(0, 32), "--cwd", item.folder, "--", "sh", "-c", script, "_", item.folder, await docker(), ...extra]);
     let address = null;
     try {
       address = r.code === 0 ? JSON.parse(r.stdout).address : null;

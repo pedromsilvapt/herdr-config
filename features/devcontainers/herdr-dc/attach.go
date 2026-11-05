@@ -25,6 +25,7 @@ var setupSteps = []struct {
 	{"gpg", gpgSetup},
 	{"docker", dockerSetup},
 	{"browser", browserSetup},
+	{"display", displaySetup},
 }
 
 func setup(id string, only []string) error {
@@ -126,6 +127,13 @@ func attach(id string) error {
 	} else {
 		stdLog("gpg: %v; not relayed", err)
 	}
+	if l, d, err := x11Listener(c, id, user, bin); err == nil {
+		serveArgs = append(serveArgs, "--listen", l.Kind+"="+l.Path)
+		dialers["x11"] = d
+		stdLog("x11: %s → host %s", l.Path, os.Getenv("DISPLAY"))
+	} else {
+		stdLog("x11: %v; not relayed", err)
+	}
 	serve := dockerCmd(serveArgs...)
 	serve.Stderr = os.Stderr
 	t := execTransport{func(n int) *exec.Cmd {
@@ -171,6 +179,13 @@ type statusReport struct {
 		Enabled bool   `json:"enabled"`
 		Script  string `json:"script,omitempty"`
 	} `json:"browser"`
+	Display struct {
+		X11     string `json:"x11,omitempty"` // the container's DISPLAY, while the channel relays it
+		Host    string `json:"host,omitempty"`
+		Wayland string `json:"wayland,omitempty"` // WAYLAND_DISPLAY, when the socket is mounted
+		Engine  string `json:"engine"`            // local | vm | remote: only local gets the mount
+		Summary string `json:"-"`
+	} `json:"display"`
 	Ports struct {
 		AutoForward bool       `json:"autoForward"`
 		Forward     []AutoPort `json:"forward"` // forwardPorts with their attributes
@@ -206,6 +221,18 @@ func status(id string, asJSON bool) error {
 			r.GPG.Error = err.Error()
 		}
 		r.Docker.Helper = dockerStatusOf(id, r.User, r.Dir)
+		r.Display.Summary = displayStatus(c, r.Channel)
+		if r.Channel != nil {
+			for _, l := range r.Channel.Listeners {
+				if l.Kind == "x11" {
+					r.Display.X11 = ":" + strings.TrimPrefix(path.Base(l.Path), "X")
+					r.Display.Host = os.Getenv("DISPLAY")
+				}
+			}
+		}
+		if c.wantsWayland() {
+			r.Display.Wayland = waylandTarget
+		}
 		if r.Browser.Enabled = c.wantsBrowser(); r.Browser.Enabled {
 			r.Browser.Script = browserScript(r.Dir)
 		}
@@ -221,6 +248,7 @@ func status(id string, asJSON bool) error {
 	if p, err := hostGPGSocket("agent-extra-socket", "gpg-agent", false); err == nil {
 		r.GPG.Host = p
 	}
+	r.Display.Engine, _ = engineLocality()
 	r.SSH.Agent = c.wantsSSHAgent()
 	if r.SSH.Agent {
 		if a, err := findAgent(); err == nil {
@@ -280,6 +308,7 @@ func status(id string, asJSON bool) error {
 	default:
 		fmt.Println("docker     not set up (no docker CLI, or a credsStore of its own)")
 	}
+	fmt.Printf("display    %s (engine %s)\n", r.Display.Summary, r.Display.Engine)
 	fmt.Printf("browser    %s\n", yes(r.Browser.Enabled, "BROWSER="+r.Browser.Script+" opens URLs on the host", "off (config, or the container sets BROWSER)"))
 	switch {
 	case len(r.Ports.Forward) == 0:
