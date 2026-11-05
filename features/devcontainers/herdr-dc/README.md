@@ -21,6 +21,12 @@ the env file `herdr-dc attach` writes (below), or, before there is one, takes
 to adding `~/.local/bin`). That way agents installed in their own folders,
 like `claude` and `opencode`, show as installed in the new-tab menu.
 
+herdr-core's server keeps the environment it started with for the container's
+life, and every tab inherits it. So when a `herdr-dc attach` for the container
+runs on the host (`pgrep`) and the env file isn't there yet (a fresh
+container), the bridge waits for it, up to 15 s, before falling back. The
+devcontainers mod starts attach before `hc machine add` for that reason.
+
 ## `herdr-dc attach <id>`
 
 Every running container the devcontainers mod added gets a `herdr-dc attach

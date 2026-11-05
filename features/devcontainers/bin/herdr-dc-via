@@ -13,10 +13,17 @@ if [ "$("$docker" inspect -f '{{.State.Running}}' "$id" 2>/dev/null)" != "true" 
   echo "devcontainer $id is not running" >&2
   exit 255
 fi
+# When a `herdr-dc attach` for this container runs on the host, its env file
+# may not be written yet (a fresh container): wait for it, up to 15 s, rather
+# than start herdr-core's server, whose environment every tab inherits for the
+# container's life, without SSH_AUTH_SOCK and the rest. The devcontainers mod
+# starts attach before it adds the machine.
+wait=0
+pgrep -fx "[^ ]*herdr-dc attach $id" >/dev/null 2>&1 && wait=15
 # docker exec skips the user's shell profile. herdr-dc attach writes the
 # environment the devcontainer tools would give (probed login shell, remoteEnv,
 # SSH_AUTH_SOCK…) to env beside its binary (dir names where); without it, take
 # PATH from the login shell (the one agents start in), falling back to adding
 # ~/.local/bin. The shell's stdin is closed so it can't eat what hc pipes in.
 exec "$docker" exec -i -u "$user" -w "$workdir" "$id" sh -c \
-  'd=$(cat /tmp/.herdr-dc/dir 2>/dev/null); e=${d:-/tmp/.herdr-dc}/env; if [ -r "$e" ]; then . "$e"; else p=$("${SHELL:-sh}" -lc env 2>/dev/null </dev/null | sed -n "s/^PATH=//p"); PATH="${p:-$HOME/.local/bin:$PATH}"; fi; '"$*"
+  'w='"$wait"'; envf() { d=$(cat /tmp/.herdr-dc/dir 2>/dev/null); e=${d:-/tmp/.herdr-dc}/env; }; envf; while [ ! -r "$e" ] && [ "$w" -gt 0 ]; do sleep 1; w=$((w - 1)); envf; done; if [ -r "$e" ]; then . "$e"; else p=$("${SHELL:-sh}" -lc env 2>/dev/null </dev/null | sed -n "s/^PATH=//p"); PATH="${p:-$HOME/.local/bin:$PATH}"; fi; '"$*"

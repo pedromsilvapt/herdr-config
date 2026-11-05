@@ -33,7 +33,8 @@
 //
 // Each running container this mod added gets a `herdr-dc attach` (SSH and
 // GPG agents, X11, the env file herdr-dc-via sources) in a background hc terminal named
-// dc-attach-<name>, labelled dc.container=<id>. Started by the syncs above, not
+// dc-attach-<name>, labelled dc.container=<id>. Started before the machine is
+// added (herdr-dc-via waits for its env file), and by the syncs above, not
 // watched: one that ended (its container stopped) is replaced on the next
 // sync while the container runs, and one for an old id (rebuilt) is killed.
 //
@@ -375,8 +376,12 @@ export default class Devcontainers extends View {
     this.openReady();
   }
 
-  // Adds a running container; returns why it failed, or null.
+  // Adds a running container; returns why it failed, or null. Its attach
+  // starts first: herdr-dc-via waits for the env file attach writes while one
+  // runs, so herdr-core's server (started by `machine add`) gets that
+  // environment rather than just PATH.
   async add(item, owned) {
+    await this.attachAll([{ name: item.name, state: "running", added: true, c: item }], { prune: false }).catch(() => null);
     const r = await hc(["machine", "add", "--name", item.name, "--via", targetOf(item), "--install", "--json"]).catch((e) => ({ code: 1, stdout: "", stderr: String(e) }));
     if (r.code !== 0) return hcError(r);
     owned[item.name] = { folder: item.folder, id: item.id };
@@ -393,7 +398,8 @@ export default class Devcontainers extends View {
   // One live `herdr-dc attach` per running, added container: ended ones and
   // ones for another container id are cleared, missing ones started. An
   // attach that failed while its container still runs shows why on the row.
-  async attachAll(items) {
+  // prune: false leaves attaches for containers not in items alone.
+  async attachAll(items, { prune = true } = {}) {
     const bin = await this.herdrDc();
     this.hint = bin ? null : DC_HINT;
     if (!bin) return;
@@ -404,6 +410,7 @@ export default class Devcontainers extends View {
     for (const t of JSON.parse(r.stdout).terminals ?? []) {
       if (!t.name?.startsWith(ATTACH)) continue;
       const item = want.get(t.name);
+      if (!item && !prune) continue;
       if (item && t.state === "live") {
         const g = await hc(["get", t.address, "--json"]).catch(() => null);
         let id = null;
