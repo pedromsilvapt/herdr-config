@@ -145,9 +145,10 @@ func TestCreateArgs(t *testing.T) {
 	local := func() (string, string) { return "local", "" }
 	vm := func() (string, string) { return "vm", "Docker Desktop" }
 	cfg := defaultConfig()
-	if args, _ := createArgs(cfg, "", local); len(args) != 0 {
+	if args, _ := createArgs(cfg, "", local); !slices.Equal(args, []string{"--skip-post-attach"}) {
 		t.Errorf("defaults: %q", args)
 	}
+	cfg.Lifecycle.PostAttach = false
 	cfg.Dotfiles.Repository = "me/dots"
 	cfg.Dotfiles.InstallCommand = "setup.sh"
 	args, _ := createArgs(cfg, "/run/user/1000/wayland-0", local)

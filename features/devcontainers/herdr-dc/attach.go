@@ -26,6 +26,7 @@ var setupSteps = []struct {
 	{"docker", dockerSetup},
 	{"browser", browserSetup},
 	{"display", displaySetup},
+	{"gh", ghSetup},
 }
 
 func setup(id string, only []string) error {
@@ -145,7 +146,15 @@ func attach(id string) error {
 	if config().Ports.AutoForward {
 		go autoForward(id, c, bin, stdLog)
 	}
-	runChannel(serve, t, dialers, stdLog)
+	var ready []func()
+	if config().Lifecycle.PostAttach {
+		ready = append(ready, func() {
+			if err := postAttach(id); err != nil {
+				stdLog("%v", err)
+			}
+		})
+	}
+	runChannel(serve, t, dialers, stdLog, ready...)
 	return errors.New("the container stopped")
 }
 
@@ -190,6 +199,14 @@ type statusReport struct {
 		AutoForward bool       `json:"autoForward"`
 		Forward     []AutoPort `json:"forward"` // forwardPorts with their attributes
 	} `json:"ports"`
+	GH struct {
+		LoginWithToken bool   `json:"loginWithToken"`
+		Container      string `json:"container,omitempty"` // logged in | not logged in; "" = no gh there
+	} `json:"gh"`
+	Lifecycle struct {
+		PostAttach bool     `json:"postAttach"`
+		Commands   []string `json:"commands"` // postAttachCommand, one per command
+	} `json:"lifecycle"`
 }
 
 // Read only: never copies the binary or starts anything.
@@ -235,6 +252,16 @@ func status(id string, asJSON bool) error {
 		}
 		if r.Browser.Enabled = c.wantsBrowser(); r.Browser.Enabled {
 			r.Browser.Script = browserScript(r.Dir)
+		}
+		if r.GH.LoginWithToken = config().GH.LoginWithToken; r.GH.LoginWithToken {
+			r.GH.Container = ghStatusOf(id, r.User, r.Dir)
+		}
+	}
+	r.Lifecycle.PostAttach = config().Lifecycle.PostAttach
+	r.Lifecycle.Commands = []string{}
+	for _, g := range postAttachCommands(c.metadata()) {
+		for _, cmd := range g {
+			r.Lifecycle.Commands = append(r.Lifecycle.Commands, cmd.String())
 		}
 	}
 	r.Ports.AutoForward = config().Ports.AutoForward
@@ -317,6 +344,22 @@ func status(id string, asJSON bool) error {
 		fmt.Printf("ports      auto-forward off (config); forwardPorts %s\n", autoPortList(r.Ports.Forward))
 	default:
 		fmt.Printf("ports      forwarded on attach: %s\n", autoPortList(r.Ports.Forward))
+	}
+	switch {
+	case !r.GH.LoginWithToken:
+		fmt.Println("gh         off (config gh.loginWithToken)")
+	case r.GH.Container == "":
+		fmt.Println("gh         no gh in the container")
+	default:
+		fmt.Printf("gh         %s\n", r.GH.Container)
+	}
+	switch {
+	case len(r.Lifecycle.Commands) == 0:
+		fmt.Println("attach     no postAttachCommand")
+	case !r.Lifecycle.PostAttach:
+		fmt.Printf("attach     postAttachCommand off (config): %s\n", strings.Join(r.Lifecycle.Commands, "; "))
+	default:
+		fmt.Printf("attach     runs postAttachCommand: %s\n", strings.Join(r.Lifecycle.Commands, "; "))
 	}
 	return nil
 }

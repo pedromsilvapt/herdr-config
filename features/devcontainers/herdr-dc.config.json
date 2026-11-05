@@ -1,0 +1,13 @@
+{
+  "dockerPath": "docker",
+  "git": { "copyConfig": true, "credentialHelper": "global", "safeDirectory": true },
+  "ssh": { "agent": true, "knownHosts": true, "agentSocket": "" },
+  "gpg": { "agent": true },
+  "docker": { "credentialHelper": true },
+  "display": { "x11": true, "wayland": true },
+  "browser": { "enabled": true, "command": "" },
+  "ports": { "autoForward": true },
+  "dotfiles": { "repository": "", "installCommand": "", "targetPath": "~/dotfiles" },
+  "gh": { "loginWithToken": false },
+  "lifecycle": { "postAttach": true }
+}

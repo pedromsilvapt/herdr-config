@@ -35,6 +35,13 @@ for feature in "$@"; do
   if [ "$feature" = devcontainers ]; then
     # herdr-dc was herdr-dc-ports before; drop the old builds.
     rm -f "$bin/herdr-dc-ports" "$lib"/herdr-dc-ports*
+    # herdr-dc's config, only when there's none yet: the live one may differ.
+    dcconf=${XDG_CONFIG_HOME:-$HOME/.config}/herdr-dc/config.json
+    if [ ! -e "$dcconf" ]; then
+      mkdir -p "$(dirname "$dcconf")"
+      cp "$dir/herdr-dc.config.json" "$dcconf"
+      echo "$feature: $dcconf"
+    fi
   fi
   for mod in "$dir"/*/go.mod; do
     [ -f "$mod" ] || continue

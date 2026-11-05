@@ -58,3 +58,20 @@ func TestGitConfigDefaults(t *testing.T) {
 		t.Error("bad credentialHelper: no error")
 	}
 }
+
+// The repo's herdr-dc.config.json (install.sh's starting config) names
+// every key; whatever it changes from the defaults should be on purpose.
+func TestRepoConfig(t *testing.T) {
+	c, err := loadConfig("../herdr-dc.config.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c != defaultConfig() {
+		t.Errorf("the repo config differs from the defaults; update this test if that's meant:\n%+v", c)
+	}
+	path := filepath.Join(t.TempDir(), "config.json")
+	os.WriteFile(path, []byte(`{"gh": {"loginWithToken": true}}`), 0o644)
+	if c, _ := loadConfig(path); !c.GH.LoginWithToken || !c.Lifecycle.PostAttach {
+		t.Errorf("gh/lifecycle: %+v %+v", c.GH, c.Lifecycle)
+	}
+}

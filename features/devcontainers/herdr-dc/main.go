@@ -20,6 +20,8 @@
 //	display setup <c>             (host) X11 display number, Wayland runtime dir (display.go);
 //	                              the X11 socket is a channel listener
 //	dotfiles args                 (host) extra `devcontainer up` flags, one per line (dotfiles.go)
+//	gh setup <c>                  (host) log the container's gh in with the host's token (off by default)
+//	lifecycle post-attach <c>     (host) run postAttachCommand (attach does, once the channel is up)
 //	ports scan <c>                (host) the container's listening ports, as JSON
 //	ports forward <c> <port>      (host) serve localhost:<port>, or a random port when
 //	                              that one is taken, and pass connections to the container
@@ -73,26 +75,28 @@ var commands = map[string]command{
 	"status": {1, func(a []string) error {
 		return status(a[0], len(a) > 1 && a[1] == "--json")
 	}},
-	"env setup":         {1, func(a []string) error { return envSetup(a[0]) }},
-	"env print":         {0, func([]string) error { return printEnvFile() }},
-	"git setup":         {1, func(a []string) error { return gitSetup(a[0]) }},
-	"git credential":    {1, func(a []string) error { return gitCredentialIn(a[0]) }},
-	"ssh setup":         {1, func(a []string) error { return sshSetup(a[0]) }},
-	"gpg setup":         {1, func(a []string) error { return gpgSetup(a[0]) }},
-	"docker setup":      {1, func(a []string) error { return dockerSetup(a[0]) }},
-	"docker credential": {1, func(a []string) error { return dockerCredentialIn(a[0]) }},
-	"browser setup":     {1, func(a []string) error { return browserSetup(a[0]) }},
-	"browser open":      {1, func(a []string) error { return browserOpenIn(a) }},
-	"display setup":     {1, func(a []string) error { return displaySetup(a[0]) }},
-	"dotfiles args":     {0, func([]string) error { return printDotfilesArgs() }},
-	"in serve":          {0, func(a []string) error { return serveChannel(a) }},
-	"in attach":         {1, func(a []string) error { return attachIn(a[0]) }},
-	"in status":         {0, func([]string) error { return statusIn() }},
-	"in env":            {0, func([]string) error { return printEnvIn() }},
-	"in x11-free":       {0, func([]string) error { return x11FreeIn() }},
-	"in ports":          {0, func([]string) error { return printPorts() }},
-	"in relay":          {2, func(a []string) error { return relay(a[0], a[1]) }},
-	"in connect":        {1, func(a []string) error { return connectIn(a) }},
+	"env setup":             {1, func(a []string) error { return envSetup(a[0]) }},
+	"env print":             {0, func([]string) error { return printEnvFile() }},
+	"git setup":             {1, func(a []string) error { return gitSetup(a[0]) }},
+	"git credential":        {1, func(a []string) error { return gitCredentialIn(a[0]) }},
+	"ssh setup":             {1, func(a []string) error { return sshSetup(a[0]) }},
+	"gpg setup":             {1, func(a []string) error { return gpgSetup(a[0]) }},
+	"docker setup":          {1, func(a []string) error { return dockerSetup(a[0]) }},
+	"docker credential":     {1, func(a []string) error { return dockerCredentialIn(a[0]) }},
+	"browser setup":         {1, func(a []string) error { return browserSetup(a[0]) }},
+	"browser open":          {1, func(a []string) error { return browserOpenIn(a) }},
+	"display setup":         {1, func(a []string) error { return displaySetup(a[0]) }},
+	"dotfiles args":         {0, func([]string) error { return printDotfilesArgs() }},
+	"gh setup":              {1, func(a []string) error { return ghSetup(a[0]) }},
+	"lifecycle post-attach": {1, func(a []string) error { return postAttach(a[0]) }},
+	"in serve":              {0, func(a []string) error { return serveChannel(a) }},
+	"in attach":             {1, func(a []string) error { return attachIn(a[0]) }},
+	"in status":             {0, func([]string) error { return statusIn() }},
+	"in env":                {0, func([]string) error { return printEnvIn() }},
+	"in x11-free":           {0, func([]string) error { return x11FreeIn() }},
+	"in ports":              {0, func([]string) error { return printPorts() }},
+	"in relay":              {2, func(a []string) error { return relay(a[0], a[1]) }},
+	"in connect":            {1, func(a []string) error { return connectIn(a) }},
 }
 
 func main() {
@@ -125,7 +129,7 @@ func usage() {
   herdr-dc version
   herdr-dc ensure <container>
   herdr-dc attach <container>
-  herdr-dc setup <container> [env|git|ssh|gpg|docker|browser|display]…
+  herdr-dc setup <container> [env|git|ssh|gpg|docker|browser|display|gh]…
   herdr-dc status <container> [--json]
   herdr-dc env setup <container>
   herdr-dc env print
@@ -139,6 +143,8 @@ func usage() {
   herdr-dc browser open <url>…
   herdr-dc display setup <container>
   herdr-dc dotfiles args
+  herdr-dc gh setup <container>
+  herdr-dc lifecycle post-attach <container>
   herdr-dc ports scan <container>
   herdr-dc ports forward <container> <port>
   herdr-dc ports auto <container>

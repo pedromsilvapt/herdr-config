@@ -2,7 +2,7 @@ package main
 
 // `dotfiles args`: extra `devcontainer up` flags for containers herdr
 // creates, one per line (flag, then its value), for what only works at
-// create time: the dotfiles repo (the CLI installs it during up, before
+// create time: --skip-post-attach (lifecycle.go), the dotfiles repo (the CLI installs it during up, before
 // attach copies the git config, as in VS Code) and the host's Wayland socket
 // (display.go).
 
@@ -41,6 +41,10 @@ func createArgs(cfg Config, waylandSocket string, locality func() (string, strin
 		} else {
 			notes = append(notes, fmt.Sprintf("no Wayland mount: the docker engine is %s (%s)", where, why))
 		}
+	}
+	// attach runs postAttachCommand, with the env file; don't run it twice.
+	if cfg.Lifecycle.PostAttach {
+		args = append(args, "--skip-post-attach")
 	}
 	return args, notes
 }

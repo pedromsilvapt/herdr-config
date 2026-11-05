@@ -69,7 +69,9 @@ func (p *procConn) Close() error {
 // Runs the channel until the serve ends: serve is the `in serve` process
 // (not started yet), dialers the host end per kind. Returns once serve's
 // stdout ends, i.e. the container side went away.
-func runChannel(serve *exec.Cmd, t Transport, dialers map[string]dialer, logf func(string, ...any)) error {
+// onReady, if given, runs (in its own goroutine) once the container side
+// listens.
+func runChannel(serve *exec.Cmd, t Transport, dialers map[string]dialer, logf func(string, ...any), onReady ...func()) error {
 	stdin, err := serve.StdinPipe()
 	if err != nil {
 		return err
@@ -99,6 +101,9 @@ func runChannel(serve *exec.Cmd, t Transport, dialers map[string]dialer, logf fu
 		return errors.New("the channel in the container didn't start in 30 s")
 	}
 	logf("channel ready")
+	for _, f := range onReady {
+		go f()
+	}
 	for lines.Scan() {
 		f := strings.Fields(lines.Text())
 		if len(f) != 3 || f[0] != "open" {

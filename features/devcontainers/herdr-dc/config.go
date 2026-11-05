@@ -48,6 +48,12 @@ type Config struct {
 		InstallCommand string `json:"installCommand"`
 		TargetPath     string `json:"targetPath"`
 	} `json:"dotfiles"`
+	GH struct {
+		LoginWithToken bool `json:"loginWithToken"` // the host's `gh auth token` into the container's gh
+	} `json:"gh"`
+	Lifecycle struct {
+		PostAttach bool `json:"postAttach"` // attach runs postAttachCommand (and `devcontainer up` doesn't)
+	} `json:"lifecycle"`
 }
 
 // JSON decodes over these, so a key the file leaves out keeps its default.
@@ -65,6 +71,7 @@ func defaultConfig() Config {
 	c.Display.X11 = true
 	c.Display.Wayland = true
 	c.Dotfiles.TargetPath = "~/dotfiles"
+	c.Lifecycle.PostAttach = true
 	return c
 }
 

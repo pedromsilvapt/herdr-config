@@ -17,7 +17,8 @@
 // space on a stopped container, or opening or starting one, starts it;
 // herdr-core reconnects by itself a few seconds later. Create builds one with
 // `devcontainer up` (@devcontainers/cli) in a terminal window, with the
-// flags `herdr-dc dotfiles args` prints (dotfiles, the Wayland mount).
+// flags `herdr-dc dotfiles args` prints (dotfiles, the Wayland mount, and
+// --skip-post-attach, since attach runs postAttachCommand).
 //
 // Clicking a row opens its container (or creates it); right-clicking opens
 // a menu of the rest, a popup copy of this mod (props.menu) that hands its
@@ -477,7 +478,8 @@ export default class Devcontainers extends View {
   async create(item) {
     const v = await exec("devcontainer", ["--version"]).catch(() => null);
     if (v?.code !== 0) throw new Error(CLI_HINT);
-    // Create-time flags from herdr-dc's config (dotfiles, the Wayland mount),
+    // Create-time flags from herdr-dc's config (dotfiles, the Wayland mount,
+    // --skip-post-attach),
     // one per line. A failed build waits for Enter so its output can be read;
     // a good one closes.
     const bin = await this.herdrDc();
