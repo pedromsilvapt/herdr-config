@@ -13,8 +13,10 @@ if [ "$("$docker" inspect -f '{{.State.Running}}' "$id" 2>/dev/null)" != "true" 
   echo "devcontainer $id is not running" >&2
   exit 255
 fi
-# docker exec skips the user's shell profile, so take PATH from their login shell
-# (the one agents start in), falling back to adding ~/.local/bin. Its stdin is
-# closed so it can't eat what hc pipes in.
+# docker exec skips the user's shell profile. herdr-dc attach writes the
+# environment the devcontainer tools would give (probed login shell, remoteEnv,
+# SSH_AUTH_SOCK…) to env beside its binary (dir names where); without it, take
+# PATH from the login shell (the one agents start in), falling back to adding
+# ~/.local/bin. The shell's stdin is closed so it can't eat what hc pipes in.
 exec "$docker" exec -i -u "$user" -w "$workdir" "$id" sh -c \
-  'p=$("${SHELL:-sh}" -lc env 2>/dev/null </dev/null | sed -n "s/^PATH=//p"); PATH="${p:-$HOME/.local/bin:$PATH}"; '"$*"
+  'd=$(cat /tmp/.herdr-dc/dir 2>/dev/null); e=${d:-/tmp/.herdr-dc}/env; if [ -r "$e" ]; then . "$e"; else p=$("${SHELL:-sh}" -lc env 2>/dev/null </dev/null | sed -n "s/^PATH=//p"); PATH="${p:-$HOME/.local/bin:$PATH}"; fi; '"$*"

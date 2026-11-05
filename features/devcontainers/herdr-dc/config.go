@@ -14,10 +14,17 @@ import (
 // means the default.
 type Config struct {
 	DockerPath string `json:"dockerPath"`
+	SSH        struct {
+		Agent       bool   `json:"agent"`
+		AgentSocket string `json:"agentSocket"`
+	} `json:"ssh"`
 }
 
+// JSON decodes over these, so a key the file leaves out keeps its default.
 func defaultConfig() Config {
-	return Config{DockerPath: "docker"}
+	c := Config{DockerPath: "docker"}
+	c.SSH.Agent = true
+	return c
 }
 
 func configPath() string {
@@ -52,9 +59,15 @@ func loadConfig(path string) (Config, error) {
 	if c.DockerPath == "" {
 		c.DockerPath = "docker"
 	}
-	if rest, ok := strings.CutPrefix(c.DockerPath, "~/"); ok {
-		home, _ := os.UserHomeDir()
-		c.DockerPath = filepath.Join(home, rest)
-	}
+	c.DockerPath = expandHome(c.DockerPath)
+	c.SSH.AgentSocket = expandHome(c.SSH.AgentSocket)
 	return c, nil
+}
+
+func expandHome(p string) string {
+	if rest, ok := strings.CutPrefix(p, "~/"); ok {
+		home, _ := os.UserHomeDir()
+		return filepath.Join(home, rest)
+	}
+	return p
 }

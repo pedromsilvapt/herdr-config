@@ -4,9 +4,18 @@
 //
 //	version
 //	ensure <c>                    (host) copy this binary into the container if needed
+//	attach <c>                    (host) long-lived: setup, then the channel (channel.go)
+//	setup <c> [step…]             (host) one-shot setup: every step, or the ones named
+//	status <c> [--json]           (host) what's set up and whether the channel runs
+//	env setup <c>                 (host) write <dir>/env in the container (env.go)
+//	env print                     (in) that file
 //	ports scan <c>                (host) the container's listening ports, as JSON
 //	ports forward <c> <port>      (host) serve localhost:<port>, or a random port when
 //	                              that one is taken, and pass connections to the container
+//	in serve --listen kind=path…  (in) the channel's listeners; stdin is its life
+//	in attach <id>                (in) hand pending connection <id> to stdio
+//	in status                     (in) what the running serve listens on, as JSON
+//	in env                        (in) the environment, after a marker (the probe)
 //	in ports                      (in) listening ports, as JSON
 //	in relay <bindIP> <target>    (in) serve <bindIP>:<random> → <target>, print the
 //	                              port, exit when stdin closes
@@ -41,8 +50,19 @@ var commands = map[string]command{
 		}
 		return forward(a[0], port)
 	}},
-	"in ports": {0, func([]string) error { return printPorts() }},
-	"in relay": {2, func(a []string) error { return relay(a[0], a[1]) }},
+	"attach": {1, func(a []string) error { return attach(a[0]) }},
+	"setup":  {1, func(a []string) error { return setup(a[0], a[1:]) }},
+	"status": {1, func(a []string) error {
+		return status(a[0], len(a) > 1 && a[1] == "--json")
+	}},
+	"env setup": {1, func(a []string) error { return envSetup(a[0]) }},
+	"env print": {0, func([]string) error { return printEnvFile() }},
+	"in serve":  {0, func(a []string) error { return serveChannel(a) }},
+	"in attach": {1, func(a []string) error { return attachIn(a[0]) }},
+	"in status": {0, func([]string) error { return statusIn() }},
+	"in env":    {0, func([]string) error { return printEnvIn() }},
+	"in ports":  {0, func([]string) error { return printPorts() }},
+	"in relay":  {2, func(a []string) error { return relay(a[0], a[1]) }},
 }
 
 func main() {
@@ -74,8 +94,17 @@ func usage() {
 	fmt.Fprint(os.Stderr, `usage:
   herdr-dc version
   herdr-dc ensure <container>
+  herdr-dc attach <container>
+  herdr-dc setup <container> [env]
+  herdr-dc status <container> [--json]
+  herdr-dc env setup <container>
+  herdr-dc env print
   herdr-dc ports scan <container>
   herdr-dc ports forward <container> <port>
+  herdr-dc in serve [--listen kind=/path]…
+  herdr-dc in attach <id>
+  herdr-dc in status
+  herdr-dc in env
   herdr-dc in ports
   herdr-dc in relay <bindIP> <target>
 `)

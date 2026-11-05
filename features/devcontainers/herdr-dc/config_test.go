@@ -31,3 +31,17 @@ func TestLoadConfig(t *testing.T) {
 		t.Error("bad JSON: no error")
 	}
 }
+
+func TestConfigDefaultsSurvivePartialFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	os.WriteFile(path, []byte(`{"ssh": {"agentSocket": "~/a.sock"}}`), 0o644)
+	c, err := loadConfig(path)
+	home, _ := os.UserHomeDir()
+	if err != nil || !c.SSH.Agent || c.SSH.AgentSocket != filepath.Join(home, "a.sock") {
+		t.Errorf("got %+v, %v", c.SSH, err)
+	}
+	os.WriteFile(path, []byte(`{"ssh": {"agent": false}}`), 0o644)
+	if c, _ := loadConfig(path); c.SSH.Agent {
+		t.Error("ssh.agent false ignored")
+	}
+}

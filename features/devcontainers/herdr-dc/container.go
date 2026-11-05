@@ -45,8 +45,10 @@ func docker(args ...string) (string, error) {
 type Container struct {
 	Config struct {
 		User   string
+		Env    []string
 		Labels map[string]string
 	}
+	Mounts          []struct{ Source, Destination string }
 	NetworkSettings struct {
 		Networks map[string]struct{ IPAddress string }
 	}

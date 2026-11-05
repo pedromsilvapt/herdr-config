@@ -60,10 +60,29 @@ Cloned from the shipped `main` layout (v0.1.9). Changes:
 
 Turns each devcontainer into a herdr-core machine, reached with
 `herdr-dc-via` (docker exec) instead of ssh. docker exec skips shell
-profiles, so the bridge takes `PATH` from the container user's login shell
+profiles, so the bridge sources the env file `herdr-dc attach` writes (below),
+or, before there is one, takes `PATH` from the container user's login shell
 (`$SHELL -lc env`, falling back to adding `~/.local/bin`). That way agents
 installed in their own folders, like `claude` and `opencode`, show as
 installed in the new-tab menu.
+
+Every running container it added gets a **`herdr-dc attach <id>`**, an hc
+background terminal named `dc-attach-<name>` (labelled `dc.container=<id>`),
+started by the syncs and replaced when it ended or the container was rebuilt.
+It does what VS Code's in-container server does, for as long as the container
+runs:
+- writes `env` next to the binary in the container: the user's environment as
+  `userEnvProbe` finds it (once per attach), `remoteEnv` from the metadata
+  (`${localEnv:…}`, `${containerEnv:…}`), `SSH_AUTH_SOCK` and `HERDR_DC=1`;
+- relays the **SSH agent**: `in serve` listens on `<dir>/run/ssh-agent.sock`
+  in the container, and each connection is passed to the host's agent over its
+  own `docker exec -i … in attach <n>`. The host agent is looked up per
+  connection: `ssh.agentSocket`, `$SSH_AUTH_SOCK`, the login shell's, then the
+  GNOME keyring, systemd, gpg-agent and 1Password paths. Skipped when the
+  container sets its own `SSH_AUTH_SOCK`.
+
+`herdr-dc status <id>` shows what's set up and which host agent is used;
+`hc read dc-attach-<name>` shows the attach's log.
 
 Lists host folders with a devcontainer config, and lets you create (`devcontainer up`), start and open
 them. Syncs at start, when the panel opens, on Refresh and on the key; nothing
@@ -114,6 +133,9 @@ Optional; a missing file or key means the default.
   path when `docker` isn't on the app's `PATH`. Used by `herdr-dc`,
   `herdr-dc-via`, both mods (read once, at app start) and `devcontainer up
   --docker-path`.
+- `ssh.agent` (`true`): relay the host's SSH agent into containers.
+- `ssh.agentSocket` (`""`): the host agent's socket, when it's somewhere the
+  search above doesn't look (1Password, Secretive, KeePassXC…).
 
 ### 2. VS Code tasks in the status bar — `features/vscode-tasks-status/`
 

@@ -26,6 +26,12 @@
 // changed or removed. A folder can leave the list only while it has no
 // container; otherwise the next sync would bring it back.
 //
+// Each running container this mod added gets a `herdr-dc attach` (SSH agent,
+// the env file herdr-dc-via sources) in a background hc terminal named
+// dc-attach-<name>, labelled dc.container=<id>. Started by the syncs above, not
+// watched: one that ended (its container stopped) is replaced on the next
+// sync while the container runs, and one for an old id (rebuilt) is killed.
+//
 // Two copies in the `dev` layout: the panel, and a headless floating one
 // (props.headless) that draws nothing but is always shown, so the start sync
 // runs from launch and a space on a stopped container wakes it even while the
@@ -43,6 +49,10 @@ const FOLDERS = "devcontainers.folders";
 const LOCK = "devcontainers.lock";
 const REQUEST = "devcontainers.request";
 const BRIDGE = "herdr-dc-via";
+const DC_HINT = "herdr-dc isn't installed, so containers get no SSH agent or env file. Run ./install.sh devcontainers from the herdr customizations repo.";
+const ATTACH = "dc-attach-";
+const attachName = (name) => `${ATTACH}${name}`.slice(0, 32);
+const lastLine = (s) => (s ?? "").trim().split("\n").filter(Boolean).pop() ?? "";
 const CLI_HINT = "Install @devcontainers/cli: npm i -g --prefix ~/.local @devcontainers/cli";
 
 const basename = (p) => p.replace(/\/+$/, "").split("/").pop() ?? p;
@@ -127,6 +137,7 @@ export default class Devcontainers extends View {
     if (props()?.part === "bar" || props()?.menu) return;
     this.items = null; // [{ folder, name, health, state, c: describe() | null, added, error }]
     this.problem = null; // docker missing and the like
+    this.hint = null; // herdr-dc missing
     this.busy = {}; // folder -> "creating" | "starting" | "stopping" | "deleting" | "opening"
     this.errors = {}; // folder -> what the last action said
     this.building = {}; // folder -> address of its `devcontainer up` terminal
@@ -351,6 +362,7 @@ export default class Devcontainers extends View {
       setShared(OWNED, owned);
       setShared(FOLDERS, folders);
     }
+    if (write) await this.attachAll(items).catch(() => null);
     this.items = items;
     await this.watchBuilds();
     this.openReady();
@@ -362,6 +374,50 @@ export default class Devcontainers extends View {
     if (r.code !== 0) return hcError(r);
     owned[item.name] = { folder: item.folder, id: item.id };
     return null;
+  }
+
+  async herdrDc() {
+    if (this.dcBin) return this.dcBin;
+    const r = await exec("sh", ["-c", "command -v herdr-dc"]).catch(() => null);
+    if (r?.code === 0) this.dcBin = r.stdout.trim();
+    return this.dcBin ?? null;
+  }
+
+  // One live `herdr-dc attach` per running, added container: ended ones and
+  // ones for another container id are cleared, missing ones started. An
+  // attach that failed while its container still runs shows why on the row.
+  async attachAll(items) {
+    const bin = await this.herdrDc();
+    this.hint = bin ? null : DC_HINT;
+    if (!bin) return;
+    const r = await hc(["ls", "--all", "--json"]);
+    if (r.code !== 0) return;
+    const want = new Map(items.filter((i) => i.state === "running" && i.added && !i.error).map((i) => [attachName(i.name), i]));
+    const have = new Set();
+    for (const t of JSON.parse(r.stdout).terminals ?? []) {
+      if (!t.name?.startsWith(ATTACH)) continue;
+      const item = want.get(t.name);
+      if (item && t.state === "live") {
+        const g = await hc(["get", t.address, "--json"]).catch(() => null);
+        let id = null;
+        try {
+          id = JSON.parse(g.stdout).labels?.["dc.container"] ?? null;
+        } catch {}
+        if (id === item.c.id) {
+          have.add(t.name);
+          continue;
+        }
+      } else if (item) {
+        const why = lastLine((await hc(["read", t.address]).catch(() => null))?.stdout).replace(/^herdr-dc: /, "");
+        if (why && why !== "the container stopped") item.attachError = `Attach: ${why}`;
+      }
+      if (t.state === "live") await hc(["kill", t.address, "--json"]).catch(() => null);
+      await hc(["rm", t.address, "--json"]).catch(() => null);
+    }
+    for (const [name, item] of want) {
+      if (have.has(name)) continue;
+      await hc(["run", "--bg", "--json", "--no-parent", "--name", name, "--label", `dc.container=${item.c.id}`, "--", bin, "attach", item.c.id]).catch(() => null);
+    }
   }
 
   // A build whose terminal ended without a running container failed.
@@ -635,7 +691,7 @@ export default class Devcontainers extends View {
     // Uncreated: a hollow dot.
     const color = { running: t.ansi2, stopped: t.dim, uncreated: t.chrome }[item.state];
     const warning = { missing: "Folder not found on disk", noconfig: "No devcontainer.json in this folder" }[item.health];
-    const error = this.errors[item.folder] ?? item.error;
+    const error = this.errors[item.folder] ?? item.error ?? item.attachError;
     const sub = item.state === "stopped" && !item.added ? `${tilde(item.folder)} · added when it starts` : tilde(item.folder);
     return v_flex()
       .id(`dc-${item.name}`)
@@ -756,6 +812,7 @@ export default class Devcontainers extends View {
           .gap(2)
           .overflow_y_scrollbar()
           .when(Boolean(this.problem), (el) => el.child(div().p(10).text_size(12).line_height("17px").text_color(t.blocked).child(this.problem)))
+          .when(Boolean(this.hint), (el) => el.child(div().p(10).text_size(12).line_height("17px").text_color(t.blocked).child(this.hint)))
           .when(Boolean(this.errors["+"]), (el) => el.child(div().p(10).text_size(12).text_color(t.ansi1).child(this.errors["+"])))
           .when(this.items === null && !this.problem, (el) => el.child(div().p(10).text_size(12).text_color(t.dim).child("Looking for devcontainers…")))
           .when(this.items !== null && !items.length && !this.problem, (el) =>
