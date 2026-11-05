@@ -152,14 +152,20 @@ func openOnHost(u string) error {
 	return nil
 }
 
-// The host port that reaches container port `port`: an existing forward, or
-// a new one. Under herdr it's an hc terminal like the ports panel's own
-// (pf-<id>-<port>, labelled dc.host_port), so the panel shows and can stop
-// it; without hc, a child of this attach.
 func forwardForBrowser(id string, port int) (int, error) {
+	hostPort, _, err := forwardPort(id, port, "")
+	return hostPort, err
+}
+
+// The host port that reaches container port `port`: an existing forward, or
+// a new one (created). Under herdr it's an hc terminal like the ports panel's
+// own (pf-<id>-<port>, labelled dc.host_port, and dc.label when label isn't
+// empty), so the panel shows and can stop it; without hc, a child of this
+// attach.
+func forwardPort(id string, port int, label string) (hostPort int, created bool, err error) {
 	c, err := inspect(id)
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	short := c.ID
 	if len(short) > 12 {
@@ -167,10 +173,10 @@ func forwardForBrowser(id string, port int) (int, error) {
 	}
 	self, err := os.Executable()
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	if hc, err := hostTool("hc"); err == nil {
-		return hcForward(hc, self, short, port)
+		return hcForward(hc, self, short, port, label)
 	}
 	return childForward(self, short, port)
 }
@@ -200,24 +206,28 @@ func (t *hcTerminal) hostPort() int {
 // One forward per port at a time, from all the RPCs of this attach.
 var forwardMu sync.Mutex
 
-func hcForward(hc, self, short string, port int) (int, error) {
+func hcForward(hc, self, short string, port int, label string) (int, bool, error) {
 	forwardMu.Lock()
 	defer forwardMu.Unlock()
 	name := fmt.Sprintf("pf-%s-%d", short, port)
 	if t, err := hcGet(hc, name); err == nil {
 		if t.State == "live" && t.hostPort() > 0 {
-			return t.hostPort(), nil
+			return t.hostPort(), false, nil
 		}
 		if t.State != "live" {
 			exec.Command(hc, "rm", name, "--json").Run()
 		}
 	}
 	if t, _ := hcGet(hc, name); t == nil {
-		out, err := exec.Command(hc, "run", "--bg", "--json", "--no-parent", "--name", name,
-			"--label", "dc.container="+short, "--label", fmt.Sprintf("dc.port=%d", port),
-			"--", self, "ports", "forward", short, strconv.Itoa(port)).CombinedOutput()
+		args := []string{"run", "--bg", "--json", "--no-parent", "--name", name,
+			"--label", "dc.container=" + short, "--label", fmt.Sprintf("dc.port=%d", port)}
+		if label != "" {
+			args = append(args, "--label", "dc.label="+label)
+		}
+		args = append(args, "--", self, "ports", "forward", short, strconv.Itoa(port))
+		out, err := exec.Command(hc, args...).CombinedOutput()
 		if err != nil {
-			return 0, fmt.Errorf("hc run: %s", strings.TrimSpace(string(out)))
+			return 0, false, fmt.Errorf("hc run: %s", strings.TrimSpace(string(out)))
 		}
 	}
 	// Ready once it labels the port it got; the binary is usually in the
@@ -228,15 +238,15 @@ func hcForward(hc, self, short string, port int) (int, error) {
 			continue
 		}
 		if p := t.hostPort(); p > 0 && t.State == "live" {
-			return p, nil
+			return p, true, nil
 		}
 		if t.State != "live" {
 			out, _ := exec.Command(hc, "read", name).Output()
 			exec.Command(hc, "rm", name, "--json").Run()
-			return 0, errors.New(strings.TrimPrefix(lastLine(string(out)), "herdr-dc: "))
+			return 0, false, errors.New(strings.TrimPrefix(lastLine(string(out)), "herdr-dc: "))
 		}
 	}
-	return 0, errors.New("the forward didn't start in 15 s")
+	return 0, false, errors.New("the forward didn't start in 15 s")
 }
 
 var forwardLine = regexp.MustCompile(`^Forwarding localhost:(\d+) `)
@@ -244,22 +254,22 @@ var forwardLine = regexp.MustCompile(`^Forwarding localhost:(\d+) `)
 // Forwards started without hc: children of this process, ended with it.
 var children = map[int]int{} // container port → host port
 
-func childForward(self, short string, port int) (int, error) {
+func childForward(self, short string, port int) (int, bool, error) {
 	forwardMu.Lock()
 	defer forwardMu.Unlock()
 	if p := children[port]; p > 0 {
-		return p, nil
+		return p, false, nil
 	}
 	cmd := exec.Command(self, "ports", "forward", short, strconv.Itoa(port))
 	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGTERM}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	if err := cmd.Start(); err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	lines := bufio.NewScanner(stdout)
 	for lines.Scan() {
@@ -274,11 +284,11 @@ func childForward(self, short string, port int) (int, error) {
 				delete(children, port)
 				forwardMu.Unlock()
 			}()
-			return hostPort, nil
+			return hostPort, true, nil
 		}
 	}
 	cmd.Wait()
-	return 0, errors.New(strings.TrimPrefix(lastLine(stderr.String()), "herdr-dc: "))
+	return 0, false, errors.New(strings.TrimPrefix(lastLine(stderr.String()), "herdr-dc: "))
 }
 
 func lastLine(s string) string {

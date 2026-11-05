@@ -134,7 +134,9 @@ Needs: `docker`, and `@devcontainers/cli`
 
 Lists the listening TCP ports of every running devcontainer (process name, and
 the bind address when it's loopback only), and forwards one to this computer
-when you click **Forward**. Nothing is forwarded on its own, and ports are only
+when you click **Forward**. The panel forwards nothing on its own (the
+container's `forwardPorts` are forwarded by `herdr-dc attach`, below, and show
+here with their `portsAttributes` label), and ports are only
 scanned when the panel opens or on Refresh (a 500 ms timer reads the layout to
 notice the panel reopening; it never runs docker). A forward takes the same
 port on `127.0.0.1` when it's free, a random one otherwise; click
@@ -150,7 +152,25 @@ since containers rarely have socat or nc. It goes in `/tmp/.herdr-dc/`, or
 - `ports forward <id> <port>` serves localhost and connects to the container's IP.
   A server on loopback only can't be reached that way, so it starts
   `in relay` inside the container (`docker exec -i`), listening on the
-  container's IP; the relay ends when the forward does (stdin closes).
+  container's IP; the relay ends when the forward does (stdin closes). When
+  the host can't reach the container's IP (Docker Desktop, Colima, a remote
+  engine), or a connection there is refused (the server wasn't listening yet,
+  or only on loopback), the connection goes through `docker exec … in
+  connect` instead (~40 ms more per connect). A forward ends when its
+  container stops (`docker wait`), so a restart doesn't leave it on an old IP.
+  The port doesn't have to be listening yet.
+- `ports auto <id>` prints `forwardPorts` (from the `devcontainer.metadata`
+  label; `"service:port"` entries for compose services are skipped) with
+  their `portsAttributes` label, `onAutoForward` and `protocol`. Port keys
+  and `a-b` ranges are matched, process patterns aren't.
+
+`herdr-dc attach` forwards those ports (except `onAutoForward: "ignore"`) as
+the same `pf-…` terminals, labelled `dc.label`, reusing ones already running.
+For the ones it started, it watches for up to 2 minutes (every 2 s) for the
+port to listen, then sends a desktop notification (`notify-send`; the
+default `notify`) or opens the browser (`openBrowser`, `openBrowserOnce`,
+`openPreview`); `silent` does neither. So an app restart (forwards survive)
+doesn't notify again; a container restart does.
 
 Each forward is an hc background terminal named `pf-<container id>-<port>`
 that labels itself `dc.host_port=<port>`, so forwards outlive the app and the
@@ -179,6 +199,7 @@ Optional; a missing file or key means the default.
   `xdg-open` when empty).
 - `ssh.agentSocket` (`""`): the host agent's socket, when it's somewhere the
   search above doesn't look (1Password, Secretive, KeePassXC…).
+- `ports.autoForward` (`true`): forward `forwardPorts` on attach.
 
 ### 2. VS Code tasks in the status bar — `features/vscode-tasks-status/`
 

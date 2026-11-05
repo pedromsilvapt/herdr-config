@@ -34,6 +34,9 @@ type Config struct {
 		Enabled bool   `json:"enabled"`
 		Command string `json:"command"` // run with the URL as its last argument; "" = xdg-open
 	} `json:"browser"`
+	Ports struct {
+		AutoForward bool `json:"autoForward"`
+	} `json:"ports"`
 }
 
 // JSON decodes over these, so a key the file leaves out keeps its default.
@@ -47,6 +50,7 @@ func defaultConfig() Config {
 	c.GPG.Agent = true
 	c.Docker.CredentialHelper = true
 	c.Browser.Enabled = true
+	c.Ports.AutoForward = true
 	return c
 }
 

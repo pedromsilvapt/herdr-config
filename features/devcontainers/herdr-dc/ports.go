@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // ---- In the container ----
@@ -148,7 +149,22 @@ func relay(bindIP, target string) error {
 		io.Copy(io.Discard, os.Stdin)
 		os.Exit(0)
 	}()
-	return serve(ln, func() (net.Conn, error) { return net.Dial("tcp", target) })
+	return serve(ln, func() (io.ReadWriteCloser, error) { return net.Dial("tcp", target) })
+}
+
+// stdio ⇄ TCP to the first of addrs that answers: one forwarded connection
+// over `docker exec`, when the host can't reach the container's IP or the
+// server isn't where it was.
+func connectIn(addrs []string) error {
+	var err error
+	for _, a := range addrs {
+		var c net.Conn
+		if c, err = net.DialTimeout("tcp", a, 3*time.Second); err == nil {
+			splice(stdio{}, c)
+			return nil
+		}
+	}
+	return err
 }
 
 // ---- On the host ----
@@ -192,6 +208,17 @@ func containerIP(id string) (string, error) {
 	return "", errors.New("the container has no IP address (host network? its ports are already on the host)")
 }
 
+// The host routes to the container's IP: a connect is answered, even if
+// refused. On Docker Desktop, Colima or a remote engine it times out.
+func reachable(ip string, port int) bool {
+	c, err := net.DialTimeout("tcp", net.JoinHostPort(ip, strconv.Itoa(port)), 300*time.Millisecond)
+	if err == nil {
+		c.Close()
+		return true
+	}
+	return errors.Is(err, syscall.ECONNREFUSED)
+}
+
 func forward(id string, port int) error {
 	ip, err := containerIP(id)
 	if err != nil {
@@ -211,13 +238,11 @@ func forward(id string, port int) error {
 			found = &ports[i]
 		}
 	}
-	if found == nil {
-		return fmt.Errorf("nothing listens on port %d in the container", port)
-	}
 
-	// The same port on the host if it's free, a random one otherwise.
+	// The same port on the host if it's free (and not privileged, e.g. 80),
+	// a random one otherwise.
 	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
-	if errors.Is(err, syscall.EADDRINUSE) {
+	if errors.Is(err, syscall.EADDRINUSE) || errors.Is(err, syscall.EACCES) {
 		ln, err = net.Listen("tcp", "127.0.0.1:0")
 	}
 	if err != nil {
@@ -225,16 +250,45 @@ func forward(id string, port int) error {
 	}
 	hostPort := ln.Addr().(*net.TCPAddr).Port
 
-	target := net.JoinHostPort(ip, strconv.Itoa(port))
-	via := ""
-	if found.Loopback {
-		relayPort, err := startRelay(id, bin, ip, net.JoinHostPort(found.Addr, strconv.Itoa(port)))
-		if err != nil {
-			return err
-		}
-		target = net.JoinHostPort(ip, strconv.Itoa(relayPort))
-		via = fmt.Sprintf(" (through a relay on %s, since it listens on %s)", target, found.Addr)
+	// One `docker exec … in connect` per connection: works on every engine
+	// and reaches loopback-only servers, ~40 ms more per connect.
+	viaExec := func() (io.ReadWriteCloser, error) {
+		cmd := dockerCmd("exec", "-i", "-u", "root", id, bin, "in", "connect",
+			net.JoinHostPort("localhost", strconv.Itoa(port)), net.JoinHostPort(ip, strconv.Itoa(port)))
+		cmd.Stderr = os.Stderr
+		return startProc(cmd)
 	}
+	var dial func() (io.ReadWriteCloser, error)
+	via := ""
+	if !reachable(ip, port) {
+		dial = viaExec
+		via = " (through docker exec: the container's IP isn't reachable from here)"
+	} else {
+		target := net.JoinHostPort(ip, strconv.Itoa(port))
+		if found != nil && found.Loopback {
+			relayPort, err := startRelay(id, bin, ip, net.JoinHostPort(found.Addr, strconv.Itoa(port)))
+			if err != nil {
+				return err
+			}
+			target = net.JoinHostPort(ip, strconv.Itoa(relayPort))
+			via = fmt.Sprintf(" (through a relay on %s, since it listens on %s)", target, found.Addr)
+		}
+		// A server that wasn't listening yet, or moved to loopback, is
+		// refused at the IP; docker exec still gets there.
+		dial = func() (io.ReadWriteCloser, error) {
+			c, err := net.DialTimeout("tcp", target, 3*time.Second)
+			if errors.Is(err, syscall.ECONNREFUSED) {
+				return viaExec()
+			}
+			return c, err
+		}
+	}
+
+	// A forward is for one run of the container: its IP and relay go with it.
+	go func() {
+		dockerCmd("wait", id).Run()
+		fail(errors.New("the container stopped"))
+	}()
 
 	if t := os.Getenv("HC_TERMINAL_ID"); t != "" {
 		if out, err := exec.Command("hc", "label", t, fmt.Sprintf("dc.host_port=%d", hostPort)).CombinedOutput(); err != nil {
@@ -242,7 +296,10 @@ func forward(id string, port int) error {
 		}
 	}
 	fmt.Printf("Forwarding localhost:%d → container %s port %d%s\n", hostPort, id, port, via)
-	return serve(ln, func() (net.Conn, error) { return net.Dial("tcp", target) })
+	if found == nil {
+		fmt.Printf("Nothing listens on port %d yet; connections are passed on once something does.\n", port)
+	}
+	return serve(ln, dial)
 }
 
 // Held so the pipe isn't collected (and closed) while we run.
@@ -284,32 +341,20 @@ func startRelay(id, bin, ip, target string) (int, error) {
 
 // ---- Both ----
 
-func serve(ln net.Listener, dial func() (net.Conn, error)) error {
+func serve(ln net.Listener, dial func() (io.ReadWriteCloser, error)) error {
 	for {
 		c, err := ln.Accept()
 		if err != nil {
 			return err
 		}
 		go func() {
-			defer c.Close()
 			up, err := dial()
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "connect:", err)
+				c.Close()
 				return
 			}
-			defer up.Close()
-			done := make(chan struct{}, 2)
-			pipe := func(dst, src net.Conn) {
-				io.Copy(dst, src)
-				if tc, ok := dst.(*net.TCPConn); ok {
-					tc.CloseWrite()
-				}
-				done <- struct{}{}
-			}
-			go pipe(up, c)
-			go pipe(c, up)
-			<-done
-			<-done
+			splice(c, up)
 		}()
 	}
 }

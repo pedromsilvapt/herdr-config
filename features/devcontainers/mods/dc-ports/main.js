@@ -1,13 +1,14 @@
 // Ports of the running devcontainers, forwarded to this computer on request.
-// Scans only when the panel opens and on Refresh; nothing is forwarded until
-// clicked. A forward takes the same port here when it's free, a random one
+// Scans only when the panel opens and on Refresh; the panel forwards nothing
+// until clicked (forwardPorts are forwarded by herdr-dc attach). A forward takes the same port here when it's free, a random one
 // otherwise.
 //
 // The work is done by `herdr-dc` (a static binary from herdr-dc/ in this
 // feature): `ports scan <id>` copies it into the container and lists listening
 // ports; `ports forward <id> <port>` serves localhost and passes connections on,
 // through a relay inside the container when the server listens on loopback
-// only. Each forward runs in its own hc terminal, named pf-<id>-<port>, with
+// only. `herdr-dc attach` forwards devcontainer.json's forwardPorts the same
+// way (labelled dc.label from portsAttributes), so they show here too. Each forward runs in its own hc terminal, named pf-<id>-<port>, with
 // the port it got as the label dc.host_port, so forwards survive the app
 // restarting and the panel rebuilds its list from `hc ls`.
 
@@ -53,7 +54,7 @@ function lastLine(s) {
 export default class Ports extends View {
   init(_props, cx) {
     this.containers = null; // [{ id, name, folder, ports: [{ port, addr, loopback, process }] | null, error }]
-    this.forwards = {}; // "<id>-<port>" -> { address, hostPort }
+    this.forwards = {}; // "<id>-<port>" -> { address, hostPort, label }
     this.busy = {}; // "<id>-<port>" -> "forwarding" | "stopping"
     this.errors = {}; // "<id>-<port>" -> what the last action said
     this.problem = null;
@@ -147,10 +148,13 @@ export default class Ports extends View {
       }
       const g = await hc(["get", t.address, "--json"]).catch(() => null);
       let hostPort = null;
+      let label = null;
       try {
-        hostPort = Number(JSON.parse(g.stdout).labels?.["dc.host_port"]) || null;
+        const labels = JSON.parse(g.stdout).labels ?? {};
+        hostPort = Number(labels["dc.host_port"]) || null;
+        label = labels["dc.label"] || null;
       } catch {}
-      forwards[`${m[1]}-${m[2]}`] = { address: t.address, hostPort };
+      forwards[`${m[1]}-${m[2]}`] = { address: t.address, hostPort, label };
     }
     this.forwards = forwards;
   }
@@ -280,7 +284,7 @@ export default class Ports extends View {
                 .child(svg(I("x")).size(11).text_color(t.muted)),
             )
         : this.button(t, `pf-fwd-${key}`, "Forward", (cx) => this.act(c, p.port, "forwarding", cx));
-    const sub = gone ? "not listening" : [p.process, p.loopback ? p.addr : null].filter(Boolean).join(" · ");
+    const sub = [f?.label, gone ? "not listening" : p.process, gone || !p.loopback ? null : p.addr].filter(Boolean).join(" · ");
     return v_flex()
       .id(`pf-row-${key}`)
       .px(10)

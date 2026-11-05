@@ -20,6 +20,8 @@
 //	ports scan <c>                (host) the container's listening ports, as JSON
 //	ports forward <c> <port>      (host) serve localhost:<port>, or a random port when
 //	                              that one is taken, and pass connections to the container
+//	ports auto <c>                (host) forwardPorts with their portsAttributes, as JSON
+//	                              (attach forwards them; ports_auto.go)
 //	in serve --listen kind=path…  (in) the channel's listeners; stdin is its life
 //	in attach <id>                (in) hand pending connection <id> to stdio
 //	in status                     (in) what the running serve listens on, as JSON
@@ -27,10 +29,13 @@
 //	in ports                      (in) listening ports, as JSON
 //	in relay <bindIP> <target>    (in) serve <bindIP>:<random> → <target>, print the
 //	                              port, exit when stdin closes
+//	in connect <addr:port>…       (in) stdio ⇄ TCP to the first that answers
 //
 // A server on 0.0.0.0 or :: is reached at the container's IP. One on loopback
 // only can't be, so forward starts a relay inside the container through
-// `docker exec -i`; it ends when that exec does.
+// `docker exec -i`; it ends when that exec does. When the IP isn't reachable
+// from the host (Docker Desktop, a remote engine), or the server wasn't
+// listening there yet, each connection is a `docker exec … in connect`.
 package main
 
 import (
@@ -58,8 +63,9 @@ var commands = map[string]command{
 		}
 		return forward(a[0], port)
 	}},
-	"attach": {1, func(a []string) error { return attach(a[0]) }},
-	"setup":  {1, func(a []string) error { return setup(a[0], a[1:]) }},
+	"ports auto": {1, func(a []string) error { return portsAuto(a[0]) }},
+	"attach":     {1, func(a []string) error { return attach(a[0]) }},
+	"setup":      {1, func(a []string) error { return setup(a[0], a[1:]) }},
 	"status": {1, func(a []string) error {
 		return status(a[0], len(a) > 1 && a[1] == "--json")
 	}},
@@ -79,6 +85,7 @@ var commands = map[string]command{
 	"in env":            {0, func([]string) error { return printEnvIn() }},
 	"in ports":          {0, func([]string) error { return printPorts() }},
 	"in relay":          {2, func(a []string) error { return relay(a[0], a[1]) }},
+	"in connect":        {1, func(a []string) error { return connectIn(a) }},
 }
 
 func main() {
@@ -125,12 +132,14 @@ func usage() {
   herdr-dc browser open <url>…
   herdr-dc ports scan <container>
   herdr-dc ports forward <container> <port>
+  herdr-dc ports auto <container>
   herdr-dc in serve [--listen kind=/path]…
   herdr-dc in attach <id>
   herdr-dc in status
   herdr-dc in env
   herdr-dc in ports
   herdr-dc in relay <bindIP> <target>
+  herdr-dc in connect <addr:port>…
 `)
 	os.Exit(2)
 }

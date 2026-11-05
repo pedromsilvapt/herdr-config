@@ -134,6 +134,9 @@ func attach(id string) error {
 		return cmd
 	}}
 	stdLog("attached to %s as %s", id, user)
+	if config().Ports.AutoForward {
+		go autoForward(id, c, bin, stdLog)
+	}
 	runChannel(serve, t, dialers, stdLog)
 	return errors.New("the container stopped")
 }
@@ -168,6 +171,10 @@ type statusReport struct {
 		Enabled bool   `json:"enabled"`
 		Script  string `json:"script,omitempty"`
 	} `json:"browser"`
+	Ports struct {
+		AutoForward bool       `json:"autoForward"`
+		Forward     []AutoPort `json:"forward"` // forwardPorts with their attributes
+	} `json:"ports"`
 }
 
 // Read only: never copies the binary or starts anything.
@@ -202,6 +209,11 @@ func status(id string, asJSON bool) error {
 		if r.Browser.Enabled = c.wantsBrowser(); r.Browser.Enabled {
 			r.Browser.Script = browserScript(r.Dir)
 		}
+	}
+	r.Ports.AutoForward = config().Ports.AutoForward
+	r.Ports.Forward, _ = c.autoPorts()
+	if r.Ports.Forward == nil {
+		r.Ports.Forward = []AutoPort{}
 	}
 	if _, err := dockerPlan(); err != nil {
 		r.Docker.Error = err.Error()
@@ -269,6 +281,14 @@ func status(id string, asJSON bool) error {
 		fmt.Println("docker     not set up (no docker CLI, or a credsStore of its own)")
 	}
 	fmt.Printf("browser    %s\n", yes(r.Browser.Enabled, "BROWSER="+r.Browser.Script+" opens URLs on the host", "off (config, or the container sets BROWSER)"))
+	switch {
+	case len(r.Ports.Forward) == 0:
+		fmt.Println("ports      no forwardPorts")
+	case !r.Ports.AutoForward:
+		fmt.Printf("ports      auto-forward off (config); forwardPorts %s\n", autoPortList(r.Ports.Forward))
+	default:
+		fmt.Printf("ports      forwarded on attach: %s\n", autoPortList(r.Ports.Forward))
+	}
 	return nil
 }
 

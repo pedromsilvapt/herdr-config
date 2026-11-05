@@ -32,7 +32,11 @@ type execTransport struct {
 }
 
 func (t execTransport) Open(id int) (io.ReadWriteCloser, error) {
-	cmd := t.command(id)
+	return startProc(t.command(id))
+}
+
+// Starts cmd with its stdin/stdout as a connection.
+func startProc(cmd *exec.Cmd) (*procConn, error) {
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
