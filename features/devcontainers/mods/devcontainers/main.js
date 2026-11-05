@@ -18,7 +18,10 @@
 // herdr-core reconnects by itself a few seconds later. Create builds one with
 // `devcontainer up` (@devcontainers/cli) in a terminal window, with the
 // flags `herdr-dc dotfiles args` prints (dotfiles, the Wayland mount, and
-// --skip-post-attach, since attach runs postAttachCommand).
+// --skip-post-attach, since attach runs postAttachCommand). Rebuild (and
+// Rebuild without cache, which adds --build-no-cache) deletes the container
+// and its machine, then builds again the same way; it opens a space on the new
+// container only when the old one had one.
 //
 // Clicking a row opens its container (or creates it); right-clicking opens
 // a menu of the rest, a popup copy of this mod (props.menu) that hands its
@@ -63,6 +66,8 @@ const tilde = (p) => (p.startsWith(home()) ? "~" + p.slice(home().length) : p);
 const ORDER = { running: 0, stopped: 1, uncreated: 2 };
 // The state an action leaves its container in.
 const EXPECT = { starting: "running", opening: "running", stopping: "stopped", deleting: "uncreated" };
+// Busy states that run a `devcontainer up`.
+const BUILDING = (b) => b === "creating" || b === "rebuilding" || b === "rebuilding-clean";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -243,7 +248,7 @@ export default class Devcontainers extends View {
       if (done || item?.error || this.errors[folder]) delete this.expect[folder];
       else if (e.until !== null && now > e.until) {
         delete this.expect[folder];
-        if (this.busy[folder] === "creating") delete this.busy[folder];
+        if (BUILDING(this.busy[folder])) delete this.busy[folder];
         this.openAfter.delete(folder);
         this.errors[folder] = `Still not ${e.state} after a minute.`;
       }
@@ -356,7 +361,7 @@ export default class Devcontainers extends View {
           error = await this.add({ ...d, name }, owned);
         }
       }
-      if (d?.running && this.busy[folder] === "creating") delete this.busy[folder];
+      if (d?.running && BUILDING(this.busy[folder])) delete this.busy[folder];
       items.push({ folder, name, health: h[folder] ?? "ok", c: d, state: d ? (d.running ? "running" : "stopped") : "uncreated", added: Boolean(owned[name]), error });
     }
     items.sort((a, b) => ORDER[a.state] - ORDER[b.state] || a.name.localeCompare(b.name));
@@ -434,7 +439,7 @@ export default class Devcontainers extends View {
     for (const f of folders) {
       if (live.includes(this.building[f])) continue;
       delete this.building[f];
-      if (this.busy[f] === "creating") {
+      if (BUILDING(this.busy[f])) {
         delete this.busy[f];
         this.openAfter.delete(f);
         this.errors[f] = "The build ended without a running container.";
@@ -475,7 +480,8 @@ export default class Devcontainers extends View {
     }
   }
 
-  async create(item) {
+  // open: open a space on it once ready; noCache: --build-no-cache.
+  async create(item, { open = true, noCache = false, verb = "Building" } = {}) {
     const v = await exec("devcontainer", ["--version"]).catch(() => null);
     if (v?.code !== 0) throw new Error(CLI_HINT);
     // Create-time flags from herdr-dc's config (dotfiles, the Wayland mount,
@@ -485,6 +491,7 @@ export default class Devcontainers extends View {
     const bin = await this.herdrDc();
     const flags = bin ? await exec(bin, ["dotfiles", "args"]).catch(() => null) : null;
     const extra = flags?.code === 0 ? flags.stdout.split("\n").filter((l) => l !== "") : [];
+    if (noCache) extra.push("--build-no-cache");
     const script = 'f=$1 d=$2; shift 2; devcontainer up --docker-path "$d" --workspace-folder "$f" "$@"; s=$?; [ $s -eq 0 ] && exit 0; echo; echo "devcontainer up failed ($s). Press Enter to close."; read _; exit $s';
     const r = await hc(["run", "--bg", "--json", "--no-parent", "--name", `dc-up-${item.name}`.slice(0, 32), "--cwd", item.folder, "--", "sh", "-c", script, "_", item.folder, await docker(), ...extra]);
     let address = null;
@@ -493,7 +500,7 @@ export default class Devcontainers extends View {
     } catch {}
     if (!address) throw new Error(`Couldn't open a terminal for the build: ${hcError(r)}`);
     this.building[item.folder] = address;
-    this.openAfter.add(item.folder);
+    if (open) this.openAfter.add(item.folder);
     openOverlay({
       kind: "window",
       key: `dc-up-${item.name}`,
@@ -502,7 +509,7 @@ export default class Devcontainers extends View {
       layout: {
         type: "column",
         children: [
-          { type: "block", size: { px: 30 }, content: { mod: "devcontainers", props: { part: "bar", name: item.name } } },
+          { type: "block", size: { px: 30 }, content: { mod: "devcontainers", props: { part: "bar", name: item.name, verb } } },
           { type: "block", content: { terminal: address } },
         ],
       },
@@ -560,8 +567,13 @@ export default class Devcontainers extends View {
           if (r.code !== 0) throw new Error(r.stderr.trim() || "docker stop failed");
         } else if (what === "deleting") await this.deleteContainer(item);
         else if (what === "removing") await this.remove(item);
-        else if (what === "creating") {
-          await this.create(item);
+        else if (what === "creating" || what === "rebuilding" || what === "rebuilding-clean") {
+          if (what !== "creating") {
+            // Reopen only what was open: the old machine's spaces go with it.
+            const open = spaces().some((s) => s.machine === item.name);
+            await this.deleteContainer(item);
+            await this.create(item, { open, noCache: what === "rebuilding-clean", verb: "Rebuilding" });
+          } else await this.create(item);
           // Busy until the container runs or the build ends.
           this.expect[key] = { state: "running", until: null };
           this.waitFor(cx);
@@ -608,7 +620,7 @@ export default class Devcontainers extends View {
 
   menu(item) {
     const { folder, name, state, health } = item;
-    openOverlay({ mod: "devcontainers", kind: "popup", width: 200, height: 112, props: { menu: { folder, name, state, health } } });
+    openOverlay({ mod: "devcontainers", kind: "popup", width: 200, height: 174, props: { menu: { folder, name, state, health } } });
   }
 
   // The popup: its choice goes to the panel copy. Delete asks once more, for 4 s.
@@ -619,7 +631,21 @@ export default class Devcontainers extends View {
       setShared(REQUEST, { folder: m.folder, what, at: Date.now() });
       closeOverlay(props().overlay);
     };
-    const confirming = Date.now() - (this.confirmAt ?? 0) < 4000;
+    const confirming = (id) => this.confirm?.id === id && Date.now() - this.confirm.at < 4000;
+    // A destructive entry: the first click asks, the second sends.
+    const sure = (id, icon, label, what, enabled) => [
+      id,
+      icon,
+      confirming(id) ? `${label}?` : label,
+      (cx) => {
+        if (confirming(id)) return send(what);
+        this.confirm = { id, at: Date.now() };
+        cx.timer.after(4000, (cx) => cx.notify());
+        cx.notify();
+      },
+      enabled,
+      confirming(id),
+    ];
     const entries =
       m.state === "uncreated"
         ? [
@@ -629,19 +655,9 @@ export default class Devcontainers extends View {
         : [
             ["open", "terminal", "Open", () => send("opening"), ok],
             m.state === "running" ? ["stop", "square", "Stop", () => send("stopping"), true] : ["start", "plus", "Start", () => send("starting"), ok],
-            [
-              "delete",
-              "x",
-              confirming ? "Delete container?" : "Delete container",
-              (cx) => {
-                if (confirming) return send("deleting");
-                this.confirmAt = Date.now();
-                cx.timer.after(4000, (cx) => cx.notify());
-                cx.notify();
-              },
-              true,
-              confirming,
-            ],
+            ["rebuild", "layers", "Rebuild", () => send("rebuilding"), ok],
+            ["rebuild-clean", "layers", "Rebuild without cache", () => send("rebuilding-clean"), ok],
+            sure("delete", "x", "Delete container", "deleting", true),
           ];
     return v_flex()
       .w_full()
@@ -724,7 +740,7 @@ export default class Devcontainers extends View {
               : div().size(8).flex_none().rounded(4).bg(color).when(item.state === "uncreated", (el) => el.border_1().border_color(t.dim)),
           )
           .child(div().flex_1().min_w(0).truncate().text_size(13).text_color(item.health === "missing" ? t.muted : t.foreground).child(item.name))
-          .child(div().flex_none().text_size(11).text_color(t.dim).child(busy ?? item.state)),
+          .child(div().flex_none().text_size(11).text_color(t.dim).child(busy === "rebuilding-clean" ? "rebuilding" : (busy ?? item.state))),
       )
       .child(div().pl(16).truncate().text_size(11.5).text_color(t.dim).child(sub))
       .when(Boolean(warning), (el) => el.child(div().pl(16).text_size(11.5).text_color(t.blocked).child(`⚠ ${warning}`)))
@@ -744,7 +760,7 @@ export default class Devcontainers extends View {
       .text_size(12.5)
       .text_color(t.muted)
       .child(svg(I("layers")).size(14))
-      .child(div().flex_1().child(`Building ${props().name}: devcontainer up`))
+      .child(div().flex_1().child(`${props().verb ?? "Building"} ${props().name}: devcontainer up`))
       .child(
         div()
           .id("dc-bar-close")
