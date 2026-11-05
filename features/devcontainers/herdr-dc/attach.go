@@ -22,6 +22,7 @@ var setupSteps = []struct {
 	{"env", envSetup},
 	{"git", gitSetup},
 	{"ssh", sshSetup},
+	{"gpg", gpgSetup},
 }
 
 func setup(id string, only []string) error {
@@ -112,6 +113,17 @@ func attach(id string) error {
 			stdLog("ssh agent: %v; connections fail until there is one", err)
 		}
 	}
+	if specs, ds, err := gpgListeners(id, user, dir); err == nil {
+		for _, l := range specs {
+			serveArgs = append(serveArgs, "--listen", l.Kind+"="+l.Path)
+			stdLog("gpg: %s at %s", l.Kind, l.Path)
+		}
+		for k, d := range ds {
+			dialers[k] = d
+		}
+	} else {
+		stdLog("gpg: %v; not relayed", err)
+	}
 	serve := dockerCmd(serveArgs...)
 	serve.Stderr = os.Stderr
 	t := execTransport{func(n int) *exec.Cmd {
@@ -141,6 +153,11 @@ type statusReport struct {
 		Host  *agentSocket `json:"host,omitempty"`
 		Error string       `json:"error,omitempty"`
 	} `json:"ssh"`
+	GPG struct {
+		Relayed bool   `json:"relayed"` // the channel listens on the container's agent socket
+		Host    string `json:"host,omitempty"`
+		Error   string `json:"error,omitempty"`
+	} `json:"gpg"`
 }
 
 // Read only: never copies the binary or starts anything.
@@ -163,6 +180,17 @@ func status(id string, asJSON bool) error {
 		}
 		r.Channel, _ = channelOf(id, r.User, bin)
 		r.Git.Helper, r.Git.Copied = gitStatusOf(id, r.User, r.Dir)
+		if r.Channel != nil {
+			for _, l := range r.Channel.Listeners {
+				r.GPG.Relayed = r.GPG.Relayed || l.Kind == "gpg"
+			}
+		}
+		if _, err := gpgPlan(id, r.User, r.Dir, false); err != nil {
+			r.GPG.Error = err.Error()
+		}
+	}
+	if p, err := hostGPGSocket("agent-extra-socket", "gpg-agent", false); err == nil {
+		r.GPG.Host = p
 	}
 	r.SSH.Agent = c.wantsSSHAgent()
 	if r.SSH.Agent {
@@ -206,6 +234,14 @@ func status(id string, asJSON bool) error {
 		fmt.Printf("ssh agent  host %s (%s)\n", r.SSH.Host.Path, r.SSH.Host.Source)
 	default:
 		fmt.Printf("ssh agent  %s\n", r.SSH.Error)
+	}
+	switch {
+	case r.GPG.Error != "":
+		fmt.Printf("gpg agent  not relayed: %s\n", r.GPG.Error)
+	case r.GPG.Relayed:
+		fmt.Printf("gpg agent  host %s\n", r.GPG.Host)
+	default:
+		fmt.Println("gpg agent  not relayed (no channel, or it started before gpg could be)")
 	}
 	return nil
 }

@@ -91,9 +91,16 @@ runs:
   host's `git credential fill|approve|reject` over the channel (`rpc.sock`);
   without a channel, or a host credential, git just prompts as usual;
 - adds the workspace repo to `safe.directory` when another user owns it;
-- copies `~/.ssh/known_hosts` when the container has `ssh` and none of its own.
+- copies `~/.ssh/known_hosts` when the container has `ssh` and none of its own;
+- relays **GPG**: the container's `agent-socket` becomes a channel listener
+  passed to the host's `agent-extra-socket` (started with `gpgconf --launch`
+  when it isn't there), so signing uses the host's keys and pinentry. The
+  container's own agent is stopped, `no-autostart` goes in its `gpg.conf`, and
+  the host's public keys and ownertrust are imported when it has no keyring
+  (with keyboxd on both sides, its socket is relayed instead). Skipped when the
+  container has no `gpg`/`gpgconf` or private keys of its own.
 
-`herdr-dc status <id>` shows what's set up and which host agent is used;
+`herdr-dc status <id>` shows what's set up and which host agents are used;
 `hc read dc-attach-<name>` shows the attach's log.
 
 Lists host folders with a devcontainer config, and lets you create (`devcontainer up`), start and open
@@ -150,6 +157,7 @@ Optional; a missing file or key means the default.
 - `git.credentialHelper` (`"global"`): where to set ours, `global`, `system`
   (as root) or `none`.
 - `ssh.knownHosts` (`true`): copy `known_hosts`.
+- `gpg.agent` (`true`): relay the host's gpg-agent and import its public keys.
 - `ssh.agentSocket` (`""`): the host agent's socket, when it's somewhere the
   search above doesn't look (1Password, Secretive, KeePassXC…).
 

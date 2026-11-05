@@ -24,6 +24,9 @@ type Config struct {
 		KnownHosts  bool   `json:"knownHosts"`
 		AgentSocket string `json:"agentSocket"`
 	} `json:"ssh"`
+	GPG struct {
+		Agent bool `json:"agent"`
+	} `json:"gpg"`
 }
 
 // JSON decodes over these, so a key the file leaves out keeps its default.
@@ -34,6 +37,7 @@ func defaultConfig() Config {
 	c.Git.SafeDirectory = true
 	c.SSH.Agent = true
 	c.SSH.KnownHosts = true
+	c.GPG.Agent = true
 	return c
 }
 

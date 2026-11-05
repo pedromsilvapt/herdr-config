@@ -12,6 +12,7 @@
 //	git setup <c>                 (host) the host's git config, credential helper, safe.directory (git.go)
 //	git credential <action>       (in) git credential helper, answered by the host over the channel
 //	ssh setup <c>                 (host) the host's known_hosts, when the container has none
+//	gpg setup <c>                 (host) the host's public keys; the agent is a channel listener (gpg.go)
 //	ports scan <c>                (host) the container's listening ports, as JSON
 //	ports forward <c> <port>      (host) serve localhost:<port>, or a random port when
 //	                              that one is taken, and pass connections to the container
@@ -63,6 +64,7 @@ var commands = map[string]command{
 	"git setup":      {1, func(a []string) error { return gitSetup(a[0]) }},
 	"git credential": {1, func(a []string) error { return gitCredentialIn(a[0]) }},
 	"ssh setup":      {1, func(a []string) error { return sshSetup(a[0]) }},
+	"gpg setup":      {1, func(a []string) error { return gpgSetup(a[0]) }},
 	"in serve":       {0, func(a []string) error { return serveChannel(a) }},
 	"in attach":      {1, func(a []string) error { return attachIn(a[0]) }},
 	"in status":      {0, func([]string) error { return statusIn() }},
@@ -101,13 +103,14 @@ func usage() {
   herdr-dc version
   herdr-dc ensure <container>
   herdr-dc attach <container>
-  herdr-dc setup <container> [env|git|ssh]…
+  herdr-dc setup <container> [env|git|ssh|gpg]…
   herdr-dc status <container> [--json]
   herdr-dc env setup <container>
   herdr-dc env print
   herdr-dc git setup <container>
   herdr-dc git credential <get|store|erase>
   herdr-dc ssh setup <container>
+  herdr-dc gpg setup <container>
   herdr-dc ports scan <container>
   herdr-dc ports forward <container> <port>
   herdr-dc in serve [--listen kind=/path]…
