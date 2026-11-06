@@ -70,7 +70,10 @@ space whose machine went away syncs once.
 
 Each devcontainer becomes a herdr-core machine, reached with `herdr-dc-via`
 (docker exec) instead of ssh, so agents installed in the container show in the
-new-tab menu. Every running container also gets a background `herdr-dc attach`
+new-tab menu. The machine exists only while its container runs: a sync that
+finds the container stopped removes the machine, so the Spaces sidebar doesn't
+list it as unreachable, and starting it adds the machine again with its spaces
+(the container's core keeps them). Every running container also gets a background `herdr-dc attach`
 that does what VS Code's in-container server does: the user's environment and
 `remoteEnv`, the host's SSH and GPG agents, git config and credentials, docker
 registry credentials, `BROWSER` opening the host's browser, and forwarding

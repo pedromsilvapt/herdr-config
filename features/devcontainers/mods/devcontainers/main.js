@@ -13,9 +13,12 @@
 // again.
 //
 // hc only saves a machine it can reach, and the bridge never starts a
-// container, so a stopped one is added the first time it runs. Selecting a
-// space on a stopped container, or opening or starting one, starts it;
-// herdr-core reconnects by itself a few seconds later. Create builds one with
+// container, so a machine exists only while its container runs: a sync that
+// finds the container stopped removes the machine (so the Spaces sidebar
+// doesn't list it as unreachable), and it's added again when the container
+// runs, its spaces with it (they're kept by the container's core). Opening
+// or starting one starts it, and so does selecting a space on one stopped
+// outside Herdr since the last sync. Create builds one with
 // `devcontainer up` (@devcontainers/cli) in a terminal window, with the
 // flags `herdr-dc dotfiles args` prints (dotfiles, the Wayland mount, and
 // --skip-post-attach, since attach runs postAttachCommand). Rebuild (and
@@ -28,7 +31,7 @@
 // choice to the panel through shared "devcontainers.request".
 //
 // Only machines this mod added (shared "devcontainers.machines") are ever
-// changed or removed. A folder can leave the list only while it has no
+// changed or removed; "added" means the machine is there now. A folder can leave the list only while it has no
 // container; otherwise the next sync would bring it back.
 //
 // Each running container this mod added gets a `herdr-dc attach` (SSH and
@@ -334,10 +337,19 @@ export default class Devcontainers extends View {
       const h = await health(fresh);
       for (const f of fresh) if (h[f] === "ok") join(f);
 
-      // Machines whose container is gone: the folder stays, uncreated.
+      // Machines whose container is gone or stopped: the folder stays,
+      // uncreated or stopped, and the machine is added again when it runs
+      // (its spaces live in the container's core, so they come back with it).
+      // That keeps stopped containers out of the Spaces sidebar.
       for (const [name, o] of Object.entries(owned)) {
-        if (found.some((d) => d.folder === o.folder)) continue;
-        await hc(["machine", "rm", name, "--json"]).catch(() => null);
+        if (found.some((d) => d.folder === o.folder && d.running)) continue;
+        const i = known.findIndex((m) => m.name === name);
+        if (i !== -1) {
+          // Kept as ours if hc couldn't remove it, so the next sync tries again.
+          const r = await hc(["machine", "rm", name, "--json"]).catch(() => null);
+          if (r?.code !== 0) continue;
+          known.splice(i, 1);
+        }
         delete owned[name];
       }
     }
