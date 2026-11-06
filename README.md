@@ -60,7 +60,9 @@ Cloned from the shipped `main` layout (v0.1.9). Changes:
 | `keys.json` | merged into `keys.json` (`ctrl-alt-shift-d` → `devcontainers.refresh`) |
 
 Lists host folders with a devcontainer config, and lets you create (`devcontainer up`), start and open
-them. Syncs at start, when the panel opens, on Refresh and on the key; nothing
+them. The right-click menu's **Open in Zed** opens a row's host folder in Zed
+(focusing the window that already has it), whatever the container's state.
+Syncs at start, when the panel opens, on Refresh and on the key; nothing
 watches containers in the background (a 500 ms timer reads the layout to notice
 the panel opening; it never runs docker). After start, stop, delete or create it
 syncs every 2 s until the container gets there, the action fails or a minute
@@ -147,6 +149,8 @@ shipped mod again and re-apply the `upstream.diff` of the matching feature.
   can only be reached through the layout.
 - The Ports panel names containers after the machines in the
   `devcontainers.machines` shared state (else their folder).
+- The devcontainers menu's **Open in Zed** runs `herdr-zed-open` from
+  zed-button; without it the entry shows an error toast.
 - The Zed button reads the `devcontainers.machines` shared state the
   devcontainers mod writes, to map a devcontainer space back to its host
   folder. It shows only for local spaces and devcontainer spaces.

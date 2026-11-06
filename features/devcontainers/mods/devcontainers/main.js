@@ -28,7 +28,9 @@
 //
 // Clicking a row opens its container (or creates it); right-clicking opens
 // a menu of the rest, a popup copy of this mod (props.menu) that hands its
-// choice to the panel through shared "devcontainers.request".
+// choice to the panel through shared "devcontainers.request". Its Open in Zed
+// (any state: the folder is on the host) runs herdr-zed-open itself, which
+// focuses the Zed window that has the folder or opens a new one.
 //
 // Only machines this mod added (shared "devcontainers.machines") are ever
 // changed or removed; "added" means the machine is there now. A folder can leave the list only while it has no
@@ -53,6 +55,7 @@ import { v_flex, h_flex } from "gpui-base";
 import { exec, hc, home, theme, run, notify, props, shared, setShared, spaces, focused, machines, terminals, layout, nextCommand, pickFolder, openOverlay, closeOverlay } from "herdr";
 
 const I = (name) => `mods/workspace-chrome/${name}.svg`;
+const ZED = "mods/devcontainers/zed.svg";
 const OWNED = "devcontainers.machines";
 const FOLDERS = "devcontainers.folders";
 const LOCK = "devcontainers.lock";
@@ -639,7 +642,8 @@ export default class Devcontainers extends View {
 
   menu(item) {
     const { folder, name, state, health } = item;
-    openOverlay({ mod: "devcontainers", kind: "popup", width: 200, height: 174, props: { menu: { folder, name, state, health } } });
+    const rows = state === "uncreated" ? 3 : 6;
+    openOverlay({ mod: "devcontainers", kind: "popup", width: 200, height: rows * 31 + 19, props: { menu: { folder, name, state, health } } });
   }
 
   // The popup: its choice goes to the panel copy. Delete asks once more, for 4 s.
@@ -648,6 +652,14 @@ export default class Devcontainers extends View {
     const ok = m.health === "ok";
     const send = (what) => {
       setShared(REQUEST, { folder: m.folder, what, at: Date.now() });
+      closeOverlay(props().overlay);
+    };
+    const zed = (cx) => {
+      const folder = m.folder;
+      cx.spawn(async () => {
+        const r = await exec("herdr-zed-open", [folder]).catch((e) => ({ code: 1, stderr: String(e?.message ?? e) }));
+        if (r.code !== 0) notify({ title: "Couldn't open Zed", body: (r.stderr || r.stdout || "").trim() || `zed ${folder} failed`, level: "error", timeout: 5000 });
+      });
       closeOverlay(props().overlay);
     };
     const confirming = (id) => this.confirm?.id === id && Date.now() - this.confirm.at < 4000;
@@ -668,11 +680,13 @@ export default class Devcontainers extends View {
     const entries =
       m.state === "uncreated"
         ? [
+            ["zed", ZED, "Open in Zed", zed, true],
             ["create", "plus", "Create", () => send("creating"), ok],
             ["remove", "x", "Remove from list", () => send("removing"), true],
           ]
         : [
             ["open", "terminal", "Open", () => send("opening"), ok],
+            ["zed", ZED, "Open in Zed", zed, true],
             m.state === "running" ? ["stop", "square", "Stop", () => send("stopping"), true] : ["start", "plus", "Start", () => send("starting"), ok],
             ["rebuild", "layers", "Rebuild", () => send("rebuilding"), ok],
             ["rebuild-clean", "layers", "Rebuild without cache", () => send("rebuilding-clean"), ok],
@@ -695,7 +709,7 @@ export default class Devcontainers extends View {
             .text_color(danger ? t.ansi1 : t.foreground)
             .when(!enabled, (el) => el.opacity(0.4))
             .when(enabled, (el) => el.cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => onClick(cx)))
-            .child(svg(I(icon)).size(14).flex_none().text_color(danger ? t.ansi1 : t.muted))
+            .child(svg(icon.endsWith(".svg") ? icon : I(icon)).size(14).flex_none().text_color(danger ? t.ansi1 : t.muted))
             .child(div().flex_1().child(label)),
         ),
       );
