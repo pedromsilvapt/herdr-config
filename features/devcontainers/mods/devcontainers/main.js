@@ -30,7 +30,8 @@
 // a menu of the rest, a popup copy of this mod (props.menu) that hands its
 // choice to the panel through shared "devcontainers.request". Its Open in Zed
 // (any state: the folder is on the host) runs herdr-zed-open itself, which
-// focuses the Zed window that has the folder or opens a new one.
+// focuses the Zed window that has the folder or opens a new one. Its Open in
+// host machine (any state too) opens a local space on the folder, or selects one.
 //
 // Only machines this mod added (shared "devcontainers.machines") are ever
 // changed or removed; "added" means the machine is there now. A folder can leave the list only while it has no
@@ -642,7 +643,7 @@ export default class Devcontainers extends View {
 
   menu(item) {
     const { folder, name, state, health } = item;
-    const rows = state === "uncreated" ? 3 : 6;
+    const rows = state === "uncreated" ? 4 : 7;
     openOverlay({ mod: "devcontainers", kind: "popup", width: 200, height: rows * 31 + 19, props: { menu: { folder, name, state, health } } });
   }
 
@@ -660,6 +661,13 @@ export default class Devcontainers extends View {
         const r = await exec("herdr-zed-open", [folder]).catch((e) => ({ code: 1, stderr: String(e?.message ?? e) }));
         if (r.code !== 0) notify({ title: "Couldn't open Zed", body: (r.stderr || r.stdout || "").trim() || `zed ${folder} failed`, level: "error", timeout: 5000 });
       });
+      closeOverlay(props().overlay);
+    };
+    // A space on this computer at the host folder (machine "": a click would
+    // otherwise use the focused space's machine). Reuses an open one.
+    const host = () => {
+      const here = spaces().find((s) => s.machine === null && s.folder === m.folder);
+      run(here ? "space.select" : "space.new", here ? { id: here.id } : { machine: "", folder: m.folder });
       closeOverlay(props().overlay);
     };
     const confirming = (id) => this.confirm?.id === id && Date.now() - this.confirm.at < 4000;
@@ -681,12 +689,14 @@ export default class Devcontainers extends View {
       m.state === "uncreated"
         ? [
             ["zed", ZED, "Open in Zed", zed, true],
+            ["host", "monitor", "Open in host machine", host, true],
             ["create", "plus", "Create", () => send("creating"), ok],
             ["remove", "x", "Remove from list", () => send("removing"), true],
           ]
         : [
             ["open", "terminal", "Open", () => send("opening"), ok],
             ["zed", ZED, "Open in Zed", zed, true],
+            ["host", "monitor", "Open in host machine", host, true],
             m.state === "running" ? ["stop", "square", "Stop", () => send("stopping"), true] : ["start", "plus", "Start", () => send("starting"), ok],
             ["rebuild", "layers", "Rebuild", () => send("rebuilding"), ok],
             ["rebuild-clean", "layers", "Rebuild without cache", () => send("rebuilding-clean"), ok],

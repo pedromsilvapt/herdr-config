@@ -61,7 +61,8 @@ Cloned from the shipped `main` layout (v0.1.9). Changes:
 
 Lists host folders with a devcontainer config, and lets you create (`devcontainer up`), start and open
 them. The right-click menu's **Open in Zed** opens a row's host folder in Zed
-(focusing the window that already has it), whatever the container's state.
+(focusing the window that already has it), and **Open in host machine** opens a
+local space on it (or selects the one already open), whatever the container's state.
 Syncs at start, when the panel opens, on Refresh and on the key; nothing
 watches containers in the background (a 500 ms timer reads the layout to notice
 the panel opening; it never runs docker). After start, stop, delete or create it
