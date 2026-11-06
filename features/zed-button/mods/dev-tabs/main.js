@@ -39,22 +39,33 @@ async function openInZed(space) {
   if (r.code !== 0) notify({ title: "Couldn't open Zed", body: (r.stderr || r.stdout || "").trim() || `zed ${folder} failed`, level: "error", timeout: 5000 });
 }
 
+const GLOBAL_PANELS = ["devcontainers", "dc-ports"];
+
 export default class Tabs extends View {
   init() {
     this.pressed = null;
     this.panels = JSON.parse(localStorage.getItem("panels") ?? "{}");
+    // Older versions remembered the global panels per space too; those would reopen them.
+    let stale = false;
+    for (const id in this.panels) if (GLOBAL_PANELS.includes(this.panels[id])) { this.panels[id] = null; stale = true; }
+    if (stale) localStorage.setItem("panels", JSON.stringify(this.panels));
+    this.globalPanel = localStorage.getItem("panel-global") ?? null;
   }
 
   // The side panel is remembered per space: switching shows that space's choice
   // (closed if it never had one), and opening or closing it records it.
+  // Devcontainers and Ports aren't about a space, so while one is open it stays
+  // open on every space; closing it or picking Files/Changes ends that.
   syncPanel(space, panel, body, enabled) {
     if (!space || !panel) return;
     const now = panel.hidden ? null : body?.active ?? null;
     if (space.id !== this.space) {
       const first = this.space === undefined;
       this.space = space.id; this.pending = null;
-      if (!(first && !(space.id in this.panels))) {
-        const stored = this.panels[space.id] ?? null, want = enabled.includes(stored) ? stored : null;
+      const global = enabled.includes(this.globalPanel) ? this.globalPanel : null;
+      if (global || !(first && !(space.id in this.panels))) {
+        const own = GLOBAL_PANELS.includes(this.panels[space.id]) ? null : this.panels[space.id] ?? null;
+        const stored = global ?? own, want = enabled.includes(stored) ? stored : null;
         if (want !== now) {
           this.pending = { want, until: Date.now() + 1000 };
           if (want) { run("layout.select", { stack: "panel-body", child: want }); run("layout.show", { id: "panel" }); }
@@ -68,6 +79,11 @@ export default class Tabs extends View {
       if (this.pending.want !== now && Date.now() < this.pending.until) return;
       this.pending = null;
     }
+    if (GLOBAL_PANELS.includes(now)) {
+      if (this.globalPanel !== now) { this.globalPanel = now; localStorage.setItem("panel-global", now); }
+      return;
+    }
+    if (this.globalPanel) { this.globalPanel = null; localStorage.removeItem("panel-global"); }
     if (this.panels[space.id] === now) return;
     this.panels[space.id] = now;
     localStorage.setItem("panels", JSON.stringify(this.panels));
