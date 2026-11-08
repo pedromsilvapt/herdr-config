@@ -15,8 +15,7 @@ function find(node, id) {
 // devcontainer's (a machine the devcontainers mod added) mapped from its
 // workspace folder back to the host folder it mounts. Null for other machines.
 async function hostFolder(space) {
-  const tab = space.tabs.find(c => c.active);
-  const folder = panes().find(p => p.tab === tab?.id && p.focused)?.cwd || space.folder;
+  const folder = space.folder;
   if (space.machine === null) return folder || home();
   const owned = shared("devcontainers.machines")?.[space.machine];
   if (!owned) return null;
