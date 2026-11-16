@@ -71,7 +71,6 @@ const CLI_HINT = "Install @devcontainers/cli: npm i -g --prefix ~/.local @devcon
 const basename = (p) => p.replace(/\/+$/, "").split("/").pop() ?? p;
 const slug = (s) => s.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "") || "devcontainer";
 const tilde = (p) => (p.startsWith(home()) ? "~" + p.slice(home().length) : p);
-const ORDER = { running: 0, stopped: 1, uncreated: 2 };
 // The state an action leaves its container in.
 const EXPECT = { starting: "running", opening: "running", stopping: "stopped", deleting: "uncreated" };
 // Busy states that run a `devcontainer up`.
@@ -381,7 +380,7 @@ export default class Devcontainers extends View {
       if (d?.running && BUILDING(this.busy[folder])) delete this.busy[folder];
       items.push({ folder, name, health: h[folder] ?? "ok", c: d, state: d ? (d.running ? "running" : "stopped") : "uncreated", added: Boolean(owned[name]), error });
     }
-    items.sort((a, b) => ORDER[a.state] - ORDER[b.state] || a.name.localeCompare(b.name));
+    items.sort((a, b) => a.name.localeCompare(b.name) || a.folder.localeCompare(b.folder));
     if (write && JSON.stringify([owned, folders]) !== before) {
       setShared(OWNED, owned);
       setShared(FOLDERS, folders);
