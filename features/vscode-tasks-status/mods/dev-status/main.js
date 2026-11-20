@@ -11,7 +11,7 @@
 
 import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
-import { spaces, panes, agents, theme, run, window, exec, hc, readTextFile, watchFolder, props, openOverlay, closeOverlay } from "herdr";
+import { spaces, panes, agents, theme, run, window, exec, hc, readTextFile, watchFolder, props, openOverlay, closeOverlay, keys } from "herdr";
 
 // The nearest folder up from $1 with a .vscode/settings.json.
 const FIND = 'd=$1; while [ -n "$d" ]; do [ -f "$d/.vscode/settings.json" ] && { echo "$d"; exit 0; }; [ "$d" = / ] && exit 1; d=$(dirname "$d"); done; exit 1';
@@ -145,6 +145,17 @@ const keyOf = (space) => {
 const width = (b) => b.label.length * 6.6 + 34;
 
 export default class WorkspaceStatus extends View {
+  // The palette key as actually bound, not a hardcoded one; without a
+  // binding the hint stays useful ("commands") instead of lying.
+  hint(t) {
+    const mac = window()?.platform === "macos";
+    const mod = { cmd: mac ? "⌘" : "Ctrl+", ctrl: mac ? "⌃" : "Ctrl+", shift: mac ? "⇧" : "Shift+", alt: mac ? "⌥" : "Alt+", option: mac ? "⌥" : "Alt+" };
+    const b = keys().find((k) => k.section === "global" && k.action === "app.palette");
+    const parts = b && b.keys.endsWith("--") ? [...b.keys.slice(0, -2).split("-"), "-"] : b?.keys.split("-");
+    const key = parts && parts.map((p) => mod[p.toLowerCase()] ?? p.toUpperCase()).join("");
+    return key ? `${key}  commands` : "commands";
+  }
+
   init(_props, cx) {
     if (props()?.part === "more") {
       this.states = props().states ?? {};
@@ -354,6 +365,6 @@ export default class WorkspaceStatus extends View {
           .tooltip(hidden.map((b) => b.label).join(", "))
           .on_click(() => openOverlay({ mod: "dev-status", kind: "popup", width: 240, height: Math.min(hidden.length * 29 + 10, 400), props: { part: "more", space: space.id, buttons: hidden, states: this.states[space.id] ?? {} } }))
           .child(`+${hidden.length}`)))
-      .when(!buttons.length, el => el.child(div().id("palette").text_color(t.dim).on_click(() => run("app.palette")).child(`${window()?.platform === "macos" ? "⌘" : "Ctrl"} Shift P  commands`)));
+      .when(!buttons.length, el => el.child(div().id("palette").text_color(t.dim).on_click(() => run("app.palette")).child(this.hint(t))));
   }
 }

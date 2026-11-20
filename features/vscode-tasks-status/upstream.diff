@@ -1,6 +1,6 @@
 --- workspace-status/main.js
 +++ dev-status/main.js
-@@ -1,20 +1,359 @@
+@@ -1,6 +1,148 @@
 +// The status bar, plus the selected space's VS Code task buttons: the
 +// `VsCodeTaskButtons.tasks` list from the project's .vscode/settings.json (the
 +// Task Buttons extension), each running its task from .vscode/tasks.json. The
@@ -14,9 +14,9 @@
 +
  import { View, div, svg } from "gpui-kit";
 -import { h_flex } from "gpui-base";
--import { spaces, agents, theme, run, window } from "herdr";
+-import { spaces, agents, theme, run, window, keys } from "herdr";
 +import { h_flex, v_flex } from "gpui-base";
-+import { spaces, panes, agents, theme, run, window, exec, hc, readTextFile, watchFolder, props, openOverlay, closeOverlay } from "herdr";
++import { spaces, panes, agents, theme, run, window, exec, hc, readTextFile, watchFolder, props, openOverlay, closeOverlay, keys } from "herdr";
 +
 +// The nearest folder up from $1 with a .vscode/settings.json.
 +const FIND = 'd=$1; while [ -n "$d" ]; do [ -f "$d/.vscode/settings.json" ] && { echo "$d"; exit 0; }; [ "$d" = / ] && exit 1; d=$(dirname "$d"); done; exit 1';
@@ -150,6 +150,11 @@
 +const width = (b) => b.label.length * 6.6 + 34;
  
  export default class WorkspaceStatus extends View {
+   // The palette key as actually bound, not a hardcoded one; without a
+@@ -14,18 +156,215 @@
+     return key ? `${key}  commands` : "commands";
+   }
+ 
 -  render() {
 +  init(_props, cx) {
 +    if (props()?.part === "more") {
@@ -357,7 +362,7 @@
          .when(needs > 0, el => el.child(div().text_color(t.blocked).child(`· ${needs} needs you`))))
 +      .when(left.length > 0, el => el.child(h_flex().gap(2).items_center().children(left.map(btn(0)))))
        .child(div().flex_1())
--      .child(div().id("palette").text_color(t.dim).on_click(() => run("app.palette")).child(`${window()?.platform === "macos" ? "⌘" : "Ctrl"} Shift P  commands`));
+-      .child(div().id("palette").text_color(t.dim).on_click(() => run("app.palette")).child(this.hint(t)));
 +      .when(right.length > 0, el => el.child(h_flex().gap(2).items_center().children(right.map(btn(left.length)))))
 +      .when(hidden.length > 0, el => el.child(
 +        div().id("task-more").h(20).px(7).flex().flex_none().items_center().rounded(5).cursor_pointer()
@@ -365,6 +370,6 @@
 +          .tooltip(hidden.map((b) => b.label).join(", "))
 +          .on_click(() => openOverlay({ mod: "dev-status", kind: "popup", width: 240, height: Math.min(hidden.length * 29 + 10, 400), props: { part: "more", space: space.id, buttons: hidden, states: this.states[space.id] ?? {} } }))
 +          .child(`+${hidden.length}`)))
-+      .when(!buttons.length, el => el.child(div().id("palette").text_color(t.dim).on_click(() => run("app.palette")).child(`${window()?.platform === "macos" ? "⌘" : "Ctrl"} Shift P  commands`)));
++      .when(!buttons.length, el => el.child(div().id("palette").text_color(t.dim).on_click(() => run("app.palette")).child(this.hint(t))));
    }
  }
