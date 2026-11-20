@@ -140,8 +140,25 @@ Needs: `zed` on `PATH`, `xprop` for the focus part.
 ## When Herdr updates its shipped mods
 
 `dev-tabs` and `dev-status` are clones of `tabs` and `workspace-status`
-(v0.1.9) and won't pick up upstream changes. To rebase them, clone the new
-shipped mod again and re-apply the `upstream.diff` of the matching feature.
+(cloned at mod version 0.1.9, as `cloned_from` in their `mod.json` records)
+and won't pick up upstream changes. Both were last rebased onto the shipped
+mods of herdr 0.9.5 (2026-11-20).
+
+To check whether one has fallen behind, apply its `upstream.diff` to the
+shipped mod, e.g. from `~/.config/herdr-app/mods`:
+
+```sh
+patch -o /tmp/out.js tabs/main.js < <repo>/features/zed-button/upstream.diff
+cmp /tmp/out.js dev-tabs/main.js
+```
+
+If it applies and matches, the clone is up to date. If it doesn't, rebase:
+three-way merge the clone (ours) with the new shipped mod (theirs), using the
+old shipped mod as the base (recover it with `patch -R` on the clone as of the
+diff's last commit), e.g. `git merge-file`. Then regenerate `upstream.diff`
+with `diff -u tabs/main.js dev-tabs/main.js`, run from a folder holding both.
+Whenever a clone changes, regenerate its `upstream.diff` in the same commit,
+so the diff keeps matching.
 
 ## Dependencies between features
 
