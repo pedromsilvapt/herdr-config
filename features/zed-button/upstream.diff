@@ -2,13 +2,13 @@
 +++ dev-tabs/main.js
 @@ -1,6 +1,6 @@
  import { View, div, svg, image } from "gpui-kit";
- import { h_flex } from "gpui-base";
+ import { h_flex, ScrollHandle } from "gpui-base";
 -import { spaces, panes, run, openOverlay, theme, window, shared, layout, settings } from "herdr";
 +import { spaces, panes, run, openOverlay, theme, window, shared, layout, settings, exec, hc, home, notify } from "herdr";
  
  function find(node, id) {
    if (node?.id === id) return node;
-@@ -11,6 +11,34 @@
+@@ -11,6 +11,35 @@
    return null;
  }
  
@@ -16,8 +16,7 @@
 +// devcontainer's (a machine the devcontainers mod added) mapped from its
 +// workspace folder back to the host folder it mounts. Null for other machines.
 +async function hostFolder(space) {
-+  const tab = space.tabs.find(c => c.active);
-+  const folder = panes().find(p => p.tab === tab?.id && p.focused)?.cwd || space.folder;
++  const folder = space.folder;
 +  if (space.machine === null) return folder || home();
 +  const owned = shared("devcontainers.machines")?.[space.machine];
 +  if (!owned) return null;
@@ -40,19 +39,57 @@
 +  if (r.code !== 0) notify({ title: "Couldn't open Zed", body: (r.stderr || r.stdout || "").trim() || `zed ${folder} failed`, level: "error", timeout: 5000 });
 +}
 +
- export default class Tabs extends View {
-   init() {
-     this.pressed = null;
-@@ -64,7 +92,7 @@
-           if (from !== null && from !== i) run("tab.move", { id: shown[from].id, index: space.tabs.findIndex(x => x.id === c.id) + 1 });
-           else run("tab.select", { id: c.id });
-         })
--        .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); openOverlay({ mod: "menu", kind: "popup", width: 200, props: { tab: "tab", target: { id: c.id, space: space.id } } }); })
-+        .on_mouse_down("right", () => openOverlay({ mod: "menu", kind: "popup", width: 200, props: { tab: "tab", target: { id: c.id, space: space.id } } }))
-         .when(Boolean(program?.icon), el => el.child(program.tint ? svg(program.icon).size(14).text_color(t.muted) : image(program.icon).size(14)))
-         .child(div().max_w(170).truncate().child(c.zoomed ? `${name} Z` : name))
-         .when(c.status === "working", el => el.child(svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.working).spin(900)))
-@@ -77,7 +105,8 @@
++const GLOBAL_PANELS = ["devcontainers", "dc-ports"];
++
+ // Same as the agents mod: drops a status glyph, keeps a leading bracket or quote.
+ const clean = (s) => (s ?? "").replace(/^[^\p{L}\p{N}\p{Ps}\p{Pi}]+/u, "").replace(/^\[ [!.] \] /, "").trim();
+ 
+@@ -34,6 +63,11 @@
+     try { this.panels = JSON.parse(localStorage.getItem("panels") ?? "{}"); } catch { this.panels = {}; }
+     if (!this.panels || typeof this.panels !== "object" || Array.isArray(this.panels)) this.panels = {};
+     this.swipe = { acc: 0, steps: 0, at: 0, last: 0 };
++    // Older versions remembered the global panels per space too; those would reopen them.
++    let stale = false;
++    for (const id in this.panels) if (GLOBAL_PANELS.includes(this.panels[id])) { this.panels[id] = null; stale = true; }
++    if (stale) localStorage.setItem("panels", JSON.stringify(this.panels));
++    this.globalPanel = localStorage.getItem("panel-global") ?? null;
+   }
+ 
+   // One tab per wheel notch. A touchpad or smooth-scrolling mouse sends many
+@@ -61,14 +95,18 @@
+ 
+   // The side panel is remembered per space: switching shows that space's choice
+   // (closed if it never had one), and opening or closing it records it.
++  // Devcontainers and Ports aren't about a space, so while one is open it stays
++  // open on every space; closing it or picking Files/Changes ends that.
+   syncPanel(space, panel, body, enabled) {
+     if (!space || !panel) return;
+     const now = panel.hidden ? null : body?.active ?? null;
+     if (space.id !== this.space) {
+       const first = this.space === undefined;
+       this.space = space.id; this.pending = null;
+-      if (!(first && !(space.id in this.panels))) {
+-        const stored = this.panels[space.id] ?? null, want = enabled.includes(stored) ? stored : null;
++      const global = enabled.includes(this.globalPanel) ? this.globalPanel : null;
++      if (global || !(first && !(space.id in this.panels))) {
++        const own = GLOBAL_PANELS.includes(this.panels[space.id]) ? null : this.panels[space.id] ?? null;
++        const stored = global ?? own, want = enabled.includes(stored) ? stored : null;
+         if (want !== now) {
+           this.pending = { want, until: Date.now() + 1000 };
+           if (want) { run("layout.select", { stack: "panel-body", child: want }); run("layout.show", { id: "panel" }); }
+@@ -82,6 +120,11 @@
+       if (this.pending.want !== now && Date.now() < this.pending.until) return;
+       this.pending = null;
+     }
++    if (GLOBAL_PANELS.includes(now)) {
++      if (this.globalPanel !== now) { this.globalPanel = now; localStorage.setItem("panel-global", now); }
++      return;
++    }
++    if (this.globalPanel) { this.globalPanel = null; localStorage.removeItem("panel-global"); }
+     if (this.panels[space.id] === now) return;
+     this.panels[space.id] = now;
+     localStorage.setItem("panels", JSON.stringify(this.panels));
+@@ -129,7 +172,8 @@
        ? Math.max(10, (root.traffic_lights[0] + 64) / settings().zoom - (sidebar?.hidden ? 0 : sidebar?.size?.px ?? 0))
        : 10;
      const panel = find(root, "panel"), body = find(root, "panel-body");
@@ -62,13 +99,10 @@
      this.syncPanel(space, panel, body, enabled);
      const panelButton = (id, label, icon) => {
        const on = panel && !panel.hidden && body?.active === id;
-@@ -96,8 +125,16 @@
+@@ -150,6 +194,14 @@
        .child(button("tab-new", "+", () => openOverlay({ mod: "new-menu", kind: "popup", width: 250, height: 512 })))
        .when(enabled.includes("files"), el => el.child(panelButton("files", "Files", "mods/files/file.svg")))
        .when(enabled.includes("changes"), el => el.child(panelButton("changes", "Changes", "mods/changes/changes.svg")))
--      .when(w?.buttons, el => el.child(button("minimize", w.platform === "windows" ? svg("mods/tabs/win-min.svg").size(16) : "−", () => run("window.minimize")))
--        .child(button("maximize", w.platform === "windows" ? svg(`mods/tabs/${w.maximized ? "win-restore" : "win-max"}.svg`).size(16) : "□", () => run("window.maximize")))
--        .child(button("close-window", w.platform === "windows" ? svg("mods/tabs/win-close.svg").size(16) : svg("mods/pane/close.svg").size(13), () => run("window.close"))));
 +      .child(panelButton("devcontainers", "Devcontainers", "mods/workspace-chrome/layers.svg"))
 +      .child(panelButton("dc-ports", "Ports", "mods/workspace-chrome/server.svg"))
 +      .when(Boolean(space) && (space.machine === null || Boolean(shared("devcontainers.machines")?.[space.machine])), el => el.child(
@@ -77,8 +111,6 @@
 +          .hover(s => s.bg(t.hover)).on_mouse_down("left", stop)
 +          .on_click((_e, cx) => cx.spawn(async () => openInZed(space)))
 +          .child(svg("mods/dev-tabs/zed.svg").size(14)).child("Zed")))
-+      .when(window()?.buttons, el => el.child(button("minimize", "−", () => run("window.minimize")))
-+        .child(button("maximize", "□", () => run("window.maximize")))
-+        .child(button("close-window", svg("mods/pane/close.svg").size(13), () => run("window.close"))));
-   }
- }
+       .when(w?.buttons, el => el.child(button("minimize", w.platform === "windows" ? svg("mods/tabs/win-min.svg").size(16) : "−", () => run("window.minimize")))
+         .child(button("maximize", w.platform === "windows" ? svg(`mods/tabs/${w.maximized ? "win-restore" : "win-max"}.svg`).size(16) : "□", () => run("window.maximize")))
+         .child(button("close-window", w.platform === "windows" ? svg("mods/tabs/win-close.svg").size(16) : svg("mods/pane/close.svg").size(13), () => run("window.close"))));
