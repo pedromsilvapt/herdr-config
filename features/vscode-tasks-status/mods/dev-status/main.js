@@ -53,7 +53,7 @@ function substitute(s, root) {
 // `line` is the same for typing into the tab's shell (sh, bash, zsh or fish) to run it again.
 function resolve(btn, tasks, root) {
   const label = btn.label ?? btn.task ?? "?";
-  const base = { label, tooltip: btn.tooltip ?? btn.description ?? null, left: btn.alignment === "left" };
+  const base = { label, tooltip: btn.tooltip ?? btn.description ?? null, left: btn.alignment !== "right" };
   const task = tasks.find((t) => t.label === btn.task);
   if (!task) return { ...base, problem: `No task "${btn.task}" in .vscode/tasks.json` };
   const sub = (s) => substitute(s, root);
@@ -335,7 +335,8 @@ export default class WorkspaceStatus extends View {
     }
     const hidden = ordered.slice(shown.length);
     const left = shown.filter((b) => b.left);
-    const right = shown.filter((b) => !b.left);
+    // Right ones in reverse, the last listed leftmost, as the extension orders them.
+    const right = shown.filter((b) => !b.left).reverse();
     const btn = (offset) => (b, i) => this.button(t, `task-${offset + i}`, b, space);
 
     return h_flex().id("root").on_size_change((size, cx) => { this.size = size; cx.notify(); })
