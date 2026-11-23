@@ -14,7 +14,7 @@
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { exec, hc, home, theme, notify, shared, spaces, focused, layout } from "herdr";
+import { exec, hc, home, theme, notify, props, shared, spaces, focused, layout, openOverlay, closeOverlay } from "herdr";
 
 const I = (name) => `mods/workspace-chrome/${name}.svg`;
 const OWNED = "devcontainers.machines";
@@ -53,6 +53,8 @@ function lastLine(s) {
 
 export default class Ports extends View {
   init(_props, cx) {
+    // The right-click popup is a copy of this mod: it only draws its menu.
+    if (props()?.menu) return;
     this.containers = null; // [{ id, name, folder, ports: [{ port, addr, loopback, process }] | null, error }]
     this.forwards = {}; // "<id>-<port>" -> { address, hostPort, label }
     this.busy = {}; // "<id>-<port>" -> "forwarding" | "stopping"
@@ -215,6 +217,45 @@ export default class Ports extends View {
     exec("xdg-open", [`http://localhost:${hostPort}`]).catch(() => null);
   }
 
+  menu(hostPort) {
+    openOverlay({ mod: "dc-ports", kind: "popup", width: 240, height: 2 * 31 + 19, props: { menu: { hostPort } } });
+  }
+
+  // The popup: copies the port on this computer, or its address (forwards
+  // bind 127.0.0.1).
+  menuView(t) {
+    const { hostPort } = props().menu;
+    const entries = [
+      ["port", "Copy port", String(hostPort)],
+      ["address", "Copy address", `127.0.0.1:${hostPort}`],
+    ];
+    return v_flex()
+      .w_full()
+      .p(5)
+      .bg(t.popover)
+      .text_size(12.8)
+      .children(
+        entries.map(([id, label, value]) =>
+          h_flex()
+            .id(`pf-menu-${id}`)
+            .h(31)
+            .px(8)
+            .gap(9)
+            .rounded(7)
+            .items_center()
+            .text_color(t.foreground)
+            .cursor_pointer()
+            .hover((s) => s.bg(t.hover))
+            .on_click((_e, cx) => {
+              cx.write_to_clipboard(value);
+              closeOverlay(props().overlay);
+            })
+            .child(div().flex_1().child(label))
+            .child(div().flex_none().text_size(11.5).text_color(t.dim).child(value)),
+        ),
+      );
+  }
+
   // The devcontainer of the focused space, if it's one.
   current() {
     return spaces().find((s) => s.id === focused()?.space)?.machine ?? null;
@@ -268,6 +309,10 @@ export default class Ports extends View {
                 .cursor_pointer()
                 .hover((s) => s.underline())
                 .on_click(() => f.hostPort && this.open(f.hostPort))
+                .on_mouse_down("right", (_e, cx) => {
+                  cx.stop_propagation();
+                  if (f.hostPort) this.menu(f.hostPort);
+                })
                 .child(`localhost:${f.hostPort ?? "?"}`),
             )
             .child(
@@ -334,6 +379,7 @@ export default class Ports extends View {
 
   render() {
     const t = theme();
+    if (props()?.menu) return this.menuView(t);
     const list = this.ordered();
     const n = Object.keys(this.forwards).length;
     const when = this.lastScan ? this.lastScan.toTimeString().slice(0, 5) : "";

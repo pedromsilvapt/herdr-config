@@ -98,7 +98,8 @@ here with their `portsAttributes` label), and ports are only
 scanned when the panel opens or on Refresh (a 500 ms timer reads the layout to
 notice the panel reopening; it never runs docker). A forward takes the same
 port on `127.0.0.1` when it's free, a random one otherwise; click
-`localhost:N` to open it in the browser, `×` to stop it. Forwards outlive the
+`localhost:N` to open it in the browser, right-click it to copy the port or
+the address (`127.0.0.1:N`), `×` to stop it. Forwards outlive the
 app, and stop when their container does. See
 [`herdr-dc/README.md`](features/devcontainers/herdr-dc/README.md#ports) for
 how they're made.
