@@ -23,8 +23,10 @@
 //	gh setup <c>                  (host) log the container's gh in with the host's token (off by default)
 //	lifecycle post-attach <c>     (host) run postAttachCommand (attach does, once the channel is up)
 //	ports scan <c>                (host) the container's listening ports, as JSON
-//	ports forward <c> <port>      (host) serve localhost:<port>, or a random port when
-//	                              that one is taken, and pass connections to the container
+//	ports forward <c> <port> [--all-interfaces] [--host-port <n>]
+//	                              (host) serve localhost:<port> (or <n>; every interface
+//	                              with the flag), or a random port when that one is
+//	                              taken, and pass connections to the container
 //	ports auto <c>                (host) forwardPorts with their portsAttributes, as JSON
 //	                              (attach forwards them; ports_auto.go)
 //	in serve --listen kind=path…  (in) the channel's listeners; stdin is its life
@@ -67,7 +69,11 @@ var commands = map[string]command{
 		if err != nil {
 			return fmt.Errorf("not a port: %s", a[1])
 		}
-		return forward(a[0], port)
+		opts, err := parseForwardOpts(a[2:])
+		if err != nil {
+			return err
+		}
+		return forward(a[0], port, opts)
 	}},
 	"ports auto": {1, func(a []string) error { return portsAuto(a[0]) }},
 	"attach":     {1, func(a []string) error { return attach(a[0]) }},
@@ -146,7 +152,7 @@ func usage() {
   herdr-dc gh setup <container>
   herdr-dc lifecycle post-attach <container>
   herdr-dc ports scan <container>
-  herdr-dc ports forward <container> <port>
+  herdr-dc ports forward <container> <port> [--all-interfaces] [--host-port <n>]
   herdr-dc ports auto <container>
   herdr-dc in serve [--listen kind=/path]…
   herdr-dc in attach <id>

@@ -96,7 +96,9 @@ Used by the Ports panel (`dc-ports`) and by `attach`.
   or only on loopback), the connection goes through `docker exec … in
   connect` instead (~40 ms more per connect). A forward ends when its
   container stops (`docker wait`), so a restart doesn't leave it on an old IP.
-  The port doesn't have to be listening yet.
+  The port doesn't have to be listening yet. `--all-interfaces` listens on
+  `0.0.0.0` instead of `127.0.0.1` (the panel labels those `dc.bind=all`);
+  `--host-port <n>` prefers that host port over the container's.
 - `ports auto <id>` prints `forwardPorts` (from the `devcontainer.metadata`
   label; `"service:port"` entries for compose services are skipped) with
   their `portsAttributes` label, `onAutoForward` and `protocol`. Port keys

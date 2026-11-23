@@ -14,10 +14,11 @@
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { exec, hc, home, theme, notify, props, shared, spaces, focused, layout, openOverlay, closeOverlay } from "herdr";
+import { exec, hc, home, theme, notify, props, shared, setShared, spaces, focused, layout, openOverlay, closeOverlay } from "herdr";
 
 const I = (name) => `mods/workspace-chrome/${name}.svg`;
 const OWNED = "devcontainers.machines";
+const REQUEST = "dc-ports.request"; // the popup's choice, for the panel
 const HINT = "herdr-dc isn't installed. Run ./install.sh devcontainers from the herdr customizations repo.";
 
 const basename = (p) => p.replace(/\/+$/, "").split("/").pop() ?? p;
@@ -151,12 +152,14 @@ export default class Ports extends View {
       const g = await hc(["get", t.address, "--json"]).catch(() => null);
       let hostPort = null;
       let label = null;
+      let all = false;
       try {
         const labels = JSON.parse(g.stdout).labels ?? {};
         hostPort = Number(labels["dc.host_port"]) || null;
         label = labels["dc.label"] || null;
+        all = labels["dc.bind"] === "all";
       } catch {}
-      forwards[`${m[1]}-${m[2]}`] = { address: t.address, hostPort, label };
+      forwards[`${m[1]}-${m[2]}`] = { address: t.address, hostPort, label, all };
     }
     this.forwards = forwards;
   }
@@ -175,7 +178,12 @@ export default class Ports extends View {
     cx.spawn(async (cx) => {
       try {
         if (what === "forwarding") await this.forward(c, port);
-        else await this.stopTerminal(this.forwards[key].address);
+        else if (what === "rebinding") {
+          // Replaced in place: same host port and label, the other bind.
+          const f = this.forwards[key];
+          await this.stopTerminal(f.address);
+          await this.forward(c, port, { all: !f.all, hostPort: f.hostPort, label: f.label });
+        } else await this.stopTerminal(this.forwards[key].address);
       } catch (e) {
         this.errors[key] = String(e?.message ?? e);
       }
@@ -185,10 +193,14 @@ export default class Ports extends View {
     });
   }
 
-  async forward(c, port) {
+  async forward(c, port, { all = false, hostPort: prefer = null, label = null } = {}) {
     const bin = await this.bin();
     const name = termName(c.id, port);
-    const r = await hc(["run", "--bg", "--json", "--no-parent", "--name", name, "--label", `dc.container=${c.id}`, "--label", `dc.port=${port}`, "--", bin, "ports", "forward", c.id, String(port)]);
+    const labels = ["--label", `dc.container=${c.id}`, "--label", `dc.port=${port}`];
+    if (label) labels.push("--label", `dc.label=${label}`);
+    if (all) labels.push("--label", "dc.bind=all");
+    const flags = [...(all ? ["--all-interfaces"] : []), ...(prefer ? ["--host-port", String(prefer)] : [])];
+    const r = await hc(["run", "--bg", "--json", "--no-parent", "--name", name, ...labels, "--", bin, "ports", "forward", c.id, String(port), ...flags]);
     if (r.code !== 0) throw new Error(lastLine(r.stderr || r.stdout) || "hc run failed");
     // Ready once it labels the port it got; up to ~15 s (a first copy into the container).
     let t = null;
@@ -205,9 +217,11 @@ export default class Ports extends View {
       await this.stopTerminal(name);
       throw new Error(lastLine(out?.stdout).replace(/^herdr-dc(-ports)?: /, "") || "The forward didn't start.");
     }
+    const wanted = prefer ?? port;
+    const where = all ? `all interfaces, port ${hostPort}` : `localhost:${hostPort}`;
     notify({
       title: `Forwarded ${c.name}:${port}`,
-      body: hostPort === port ? `localhost:${port}` : `localhost:${hostPort} (port ${port} is taken here)`,
+      body: hostPort === wanted ? where : `${where} (port ${wanted} is taken here)`,
       level: "success",
       timeout: 4000,
     });
@@ -217,17 +231,48 @@ export default class Ports extends View {
     exec("xdg-open", [`http://localhost:${hostPort}`]).catch(() => null);
   }
 
-  menu(hostPort) {
-    openOverlay({ mod: "dc-ports", kind: "popup", width: 240, height: 2 * 31 + 19, props: { menu: { hostPort } } });
+  // This computer's address on its default route (no packet is sent).
+  async lanIP() {
+    const r = await exec("ip", ["-4", "route", "get", "1.1.1.1"]).catch(() => null);
+    return / src (\d+\.\d+\.\d+\.\d+)/.exec(r?.stdout ?? "")?.[1] ?? null;
   }
 
-  // The popup: copies the port on this computer, or its address (forwards
-  // bind 127.0.0.1).
+  menu(c, port, f, cx) {
+    cx.spawn(async () => {
+      const ip = f.all ? ((await this.lanIP()) ?? "127.0.0.1") : "127.0.0.1";
+      openOverlay({ mod: "dc-ports", kind: "popup", width: 270, height: 3 * 31 + 19, props: { menu: { id: c.id, port, hostPort: f.hostPort, all: f.all, ip } } });
+    });
+  }
+
+  // A choice from the popup. Called from render, where cx.notify() throws, so
+  // it runs on the next tick. An old request (from before a restart) is dropped.
+  takeRequest(cx) {
+    const r = shared(REQUEST);
+    if (!r || r.at === this.handled) return;
+    this.handled = r.at;
+    cx.timer.after(0, (cx) => {
+      setShared(REQUEST, null);
+      const c = this.containers?.find((x) => x.id === r.id);
+      if (c && this.forwards[`${r.id}-${r.port}`] && Date.now() - r.at < 5000) this.act(c, r.port, "rebinding", cx);
+    });
+  }
+
+  // The popup: copies the port on this computer or its address, and switches
+  // what the forward listens on.
   menuView(t) {
-    const { hostPort } = props().menu;
+    const { id, port, hostPort, all, ip } = props().menu;
+    const copy = (value) => (cx) => {
+      cx.write_to_clipboard(value);
+      closeOverlay(props().overlay);
+    };
+    const rebind = () => {
+      setShared(REQUEST, { id, port, at: Date.now() });
+      closeOverlay(props().overlay);
+    };
     const entries = [
-      ["port", "Copy port", String(hostPort)],
-      ["address", "Copy address", `127.0.0.1:${hostPort}`],
+      ["port", "Copy port", String(hostPort), copy(String(hostPort))],
+      ["address", "Copy address", `${ip}:${hostPort}`, copy(`${ip}:${hostPort}`)],
+      all ? ["bind", "Listen on localhost only", "", rebind] : ["bind", "Listen on all interfaces", "0.0.0.0", rebind],
     ];
     return v_flex()
       .w_full()
@@ -235,9 +280,9 @@ export default class Ports extends View {
       .bg(t.popover)
       .text_size(12.8)
       .children(
-        entries.map(([id, label, value]) =>
+        entries.map(([entry, label, value, onClick]) =>
           h_flex()
-            .id(`pf-menu-${id}`)
+            .id(`pf-menu-${entry}`)
             .h(31)
             .px(8)
             .gap(9)
@@ -246,10 +291,7 @@ export default class Ports extends View {
             .text_color(t.foreground)
             .cursor_pointer()
             .hover((s) => s.bg(t.hover))
-            .on_click((_e, cx) => {
-              cx.write_to_clipboard(value);
-              closeOverlay(props().overlay);
-            })
+            .on_click((_e, cx) => onClick(cx))
             .child(div().flex_1().child(label))
             .child(div().flex_none().text_size(11.5).text_color(t.dim).child(value)),
         ),
@@ -311,9 +353,9 @@ export default class Ports extends View {
                 .on_click(() => f.hostPort && this.open(f.hostPort))
                 .on_mouse_down("right", (_e, cx) => {
                   cx.stop_propagation();
-                  if (f.hostPort) this.menu(f.hostPort);
+                  if (f.hostPort) this.menu(c, p.port, f, cx);
                 })
-                .child(`localhost:${f.hostPort ?? "?"}`),
+                .child(`${f.all ? "0.0.0.0" : "localhost"}:${f.hostPort ?? "?"}`),
             )
             .child(
               div()
@@ -377,9 +419,10 @@ export default class Ports extends View {
       .children(ports.map((p) => this.portRow(t, c, p)));
   }
 
-  render() {
+  render(cx) {
     const t = theme();
     if (props()?.menu) return this.menuView(t);
+    this.takeRequest(cx);
     const list = this.ordered();
     const n = Object.keys(this.forwards).length;
     const when = this.lastScan ? this.lastScan.toTimeString().slice(0, 5) : "";

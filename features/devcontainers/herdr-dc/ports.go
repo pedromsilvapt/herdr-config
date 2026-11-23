@@ -219,7 +219,54 @@ func reachable(ip string, port int) bool {
 	return errors.Is(err, syscall.ECONNREFUSED)
 }
 
-func forward(id string, port int) error {
+// How a forward listens on the host. The default is loopback only: every
+// interface exposes the container's server to the network.
+type forwardOpts struct {
+	allInterfaces bool
+	hostPort      int // the port to prefer; 0: the container's
+}
+
+func parseForwardOpts(args []string) (forwardOpts, error) {
+	var o forwardOpts
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--all-interfaces":
+			o.allInterfaces = true
+		case "--host-port":
+			i++
+			if i == len(args) {
+				return o, errors.New("--host-port needs a port")
+			}
+			n, err := strconv.Atoi(args[i])
+			if err != nil || n < 1 || n > 65535 {
+				return o, fmt.Errorf("not a port: %s", args[i])
+			}
+			o.hostPort = n
+		default:
+			return o, fmt.Errorf("unknown option: %s", args[i])
+		}
+	}
+	return o, nil
+}
+
+// Listens on want if it's free (and not privileged, e.g. 80), a random port
+// otherwise. With retry, a busy port gets a moment first: the forward being
+// replaced may still be closing it. IPv4 only: Go's "tcp" makes 0.0.0.0 a
+// dual-stack wildcard, which would expose the port on IPv6 too.
+func listenHost(bind string, want int, retry bool) (net.Listener, error) {
+	addr := net.JoinHostPort(bind, strconv.Itoa(want))
+	ln, err := net.Listen("tcp4", addr)
+	for i := 0; retry && i < 10 && errors.Is(err, syscall.EADDRINUSE); i++ {
+		time.Sleep(100 * time.Millisecond)
+		ln, err = net.Listen("tcp4", addr)
+	}
+	if errors.Is(err, syscall.EADDRINUSE) || errors.Is(err, syscall.EACCES) {
+		return net.Listen("tcp4", net.JoinHostPort(bind, "0"))
+	}
+	return ln, err
+}
+
+func forward(id string, port int, opts forwardOpts) error {
 	ip, err := containerIP(id)
 	if err != nil {
 		return err
@@ -239,12 +286,15 @@ func forward(id string, port int) error {
 		}
 	}
 
-	// The same port on the host if it's free (and not privileged, e.g. 80),
-	// a random one otherwise.
-	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
-	if errors.Is(err, syscall.EADDRINUSE) || errors.Is(err, syscall.EACCES) {
-		ln, err = net.Listen("tcp", "127.0.0.1:0")
+	bind, scope := "127.0.0.1", ""
+	if opts.allInterfaces {
+		bind, scope = "0.0.0.0", " (all interfaces)"
 	}
+	want := port
+	if opts.hostPort > 0 {
+		want = opts.hostPort
+	}
+	ln, err := listenHost(bind, want, opts.hostPort > 0)
 	if err != nil {
 		return err
 	}
@@ -295,7 +345,7 @@ func forward(id string, port int) error {
 			return fmt.Errorf("hc label: %s", strings.TrimSpace(string(out)))
 		}
 	}
-	fmt.Printf("Forwarding localhost:%d → container %s port %d%s\n", hostPort, id, port, via)
+	fmt.Printf("Forwarding localhost:%d%s → container %s port %d%s\n", hostPort, scope, id, port, via)
 	if found == nil {
 		fmt.Printf("Nothing listens on port %d yet; connections are passed on once something does.\n", port)
 	}
