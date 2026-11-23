@@ -147,7 +147,7 @@ Needs: `zed` on `PATH`, `xprop` for the focus part.
 `dev-tabs` and `dev-status` are clones of `tabs` and `workspace-status`
 (cloned at mod version 0.1.9, as `cloned_from` in their `mod.json` records)
 and won't pick up upstream changes. Both were last rebased onto the shipped
-mods of herdr 0.9.5 (2026-11-20).
+mods of herdr 0.9.5, app 0.1.17 (2026-11-23).
 
 To check whether one has fallen behind, apply its `upstream.diff` to the
 shipped mod, e.g. from `~/.config/herdr-app/mods`:
