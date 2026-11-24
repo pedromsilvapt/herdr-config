@@ -145,6 +145,9 @@ at its `:line`, `:line:column`, `(line,column)` or `#L12` position
 (`mods/dev-tabs/link.js`). In a devcontainer, paths inside the workspace mount
 map to the host; other container paths show a toast. Folders and files Zed
 can't show (PDFs, archives, media, office files) go to the system opener.
+A file outside the space's folder is never added to that window's project: it
+opens in a Zed window whose project has a folder above it (matched by folder
+name, like the button), or else in a new window of its own.
 
 Needs: `zed` on `PATH`, `xprop` for the focus part.
 
