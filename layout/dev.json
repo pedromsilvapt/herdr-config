@@ -5,6 +5,7 @@
     "version": "0.1.9"
   },
   "type": "row",
+  "link_handlers": ["dev-tabs"],
   "children": [
     {
       "id": "sidebar",

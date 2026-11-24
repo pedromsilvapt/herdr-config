@@ -1,6 +1,7 @@
 {
   "place": "none",
   "title": "Tabs",
+  "link_handlers": [{ "kind": "file", "pattern": "." }],
   "cloned_from": {
     "name": "tabs",
     "version": "0.1.9"

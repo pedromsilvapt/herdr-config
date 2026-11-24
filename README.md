@@ -140,6 +140,12 @@ matching by folder name. Plain `zed <folder>` can't do this alone because
 `cli_default_open_behavior: existing_window` would add an unopened folder to
 the active window. Without X11/`xprop` it always opens a new window.
 
+Ctrl-clicking a file path in a terminal opens it in that space's Zed window,
+at its `:line`, `:line:column`, `(line,column)` or `#L12` position
+(`mods/dev-tabs/link.js`). In a devcontainer, paths inside the workspace mount
+map to the host; other container paths show a toast. Folders and files Zed
+can't show (PDFs, archives, media, office files) go to the system opener.
+
 Needs: `zed` on `PATH`, `xprop` for the focus part.
 
 ## When Herdr updates its shipped mods

@@ -1,20 +1,25 @@
 #!/bin/sh
-# Opens a folder in Zed: focuses the window that already has it, or opens a new one.
+# herdr-zed-open <folder> [file[:line[:column]]]
+# Opens a folder in Zed, and optionally a file in it: focuses the window that
+# already has the folder, or opens a new one.
 # Plain `zed <folder>` focuses a window that has the folder, but with
 # cli_default_open_behavior = existing_window it adds an unopened folder to the
 # active window, so those get `zed -n`. Open folders are read from Zed's window
 # titles ("name — file", "a, b — file"), which needs X11 and xprop; without them
 # it always opens a new window.
 folder=${1%/}
+target=${2:-}
 name=$(basename "$folder")
+set -- "$folder"
+[ -z "$target" ] || set -- "$folder" "$target"
 if [ -n "${DISPLAY:-}" ] && command -v xprop >/dev/null; then
   for w in $(xprop -root _NET_CLIENT_LIST 2>/dev/null | sed 's/.*# //; s/,/ /g'); do
     props=$(xprop -id "$w" WM_CLASS _NET_WM_NAME 2>/dev/null) || continue
     case $props in *'"dev.zed.Zed'*) ;; *) continue ;; esac
     title=$(printf '%s\n' "$props" | sed -n 's/^_NET_WM_NAME(UTF8_STRING) = "\(.*\)"$/\1/p')
     if printf '%s\n' "${title%% — *}" | sed 's/, /\n/g' | grep -Fxq -- "$name"; then
-      exec zed "$folder"
+      exec zed "$@"
     fi
   done
 fi
-exec zed -n "$folder"
+exec zed -n "$@"

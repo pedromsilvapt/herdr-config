@@ -1,6 +1,7 @@
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, ScrollHandle } from "gpui-base";
-import { spaces, panes, run, openOverlay, theme, window, shared, layout, settings, exec, hc, home, notify } from "herdr";
+import { spaces, panes, run, openOverlay, theme, window, shared, layout, settings, exec, notify } from "herdr";
+import { hostFolder } from "./host.js";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -9,24 +10,6 @@ function find(node, id) {
     if (found) return found;
   }
   return null;
-}
-
-// The space's folder as this computer sees it: a local space's as is, a
-// devcontainer's (a machine the devcontainers mod added) mapped from its
-// workspace folder back to the host folder it mounts. Null for other machines.
-async function hostFolder(space) {
-  const folder = space.folder;
-  if (space.machine === null) return folder || home();
-  const owned = shared("devcontainers.machines")?.[space.machine];
-  if (!owned) return null;
-  const r = await hc(["machine", "ls", "--json"]).catch(() => null);
-  let workdir = null;
-  try {
-    const target = JSON.parse(r.stdout).machines.find(m => m.name === space.machine)?.target ?? "";
-    workdir = target.split(" ")[3] ?? null;
-  } catch {}
-  if (workdir && folder && (folder === workdir || folder.startsWith(workdir + "/"))) return owned.folder + folder.slice(workdir.length);
-  return owned.folder;
 }
 
 // Zed always runs here, on the host, even for a devcontainer space. herdr-zed-open
